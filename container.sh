@@ -2,12 +2,12 @@
 
 # ============================================================
 #        👑 KINGCLOUD • DOCKER CONTROL CENTER
-#        Premium Terminal GUI • v3.0
+#        Premium Terminal GUI • Username/Password Edition
 # ============================================================
 
 set +e
 
-# -------------------- COLORS --------------------
+# ---------------- COLORS ----------------
 RESET="\033[0m"
 BOLD="\033[1m"
 DIM="\033[2m"
@@ -22,11 +22,18 @@ BLUE="\033[38;5;75m"
 WHITE="\033[97m"
 GRAY="\033[90m"
 
-# -------------------- CONFIG --------------------
+# ---------------- CONFIG ----------------
 LABEL="kingcloud.container=true"
 IMAGE="ubuntu:24.04"
 
-# -------------------- TERMINAL --------------------
+KC_DIR="${HOME}/.kingcloud"
+CRED_DIR="${KC_DIR}/credentials"
+
+mkdir -p "$CRED_DIR"
+chmod 700 "$KC_DIR" 2>/dev/null
+chmod 700 "$CRED_DIR" 2>/dev/null
+
+# ---------------- CLEAN EXIT ----------------
 cleanup() {
     printf "\033[0m\033[?25h"
     clear
@@ -35,8 +42,13 @@ cleanup() {
 
 trap cleanup INT TERM
 
-hide_cursor() { printf "\033[?25l"; }
-show_cursor() { printf "\033[?25h"; }
+hide_cursor() {
+    printf "\033[?25l"
+}
+
+show_cursor() {
+    printf "\033[?25h"
+}
 
 pause_screen() {
     echo
@@ -47,48 +59,10 @@ line() {
     printf "${PURPLE}  ─────────────────────────────────────────────────────${RESET}\n"
 }
 
-# -------------------- ANIMATION --------------------
-spinner() {
-    local pid=$1
-    local text="${2:-Working}"
-    local chars=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-    local i=0
+# ============================================================
+#                         LOGO
+# ============================================================
 
-    hide_cursor
-
-    while kill -0 "$pid" 2>/dev/null; do
-        printf "\r  ${PURPLE}${chars[$i]}${RESET} ${WHITE}${text}${RESET}..."
-        i=$(( (i + 1) % ${#chars[@]} ))
-        sleep 0.08
-    done
-
-    printf "\r\033[K"
-    show_cursor
-}
-
-run_loading() {
-    local text="$1"
-    shift
-
-    "$@" >/tmp/kc_command.log 2>&1 &
-    local pid=$!
-
-    spinner "$pid" "$text"
-    wait "$pid"
-    local result=$?
-
-    if [ "$result" -eq 0 ]; then
-        printf "  ${GREEN}✔${RESET} ${WHITE}${text}${RESET}\n"
-    else
-        printf "  ${RED}✖${RESET} ${WHITE}${text} failed${RESET}\n"
-        echo
-        sed 's/^/  /' /tmp/kc_command.log | tail -20
-    fi
-
-    return "$result"
-}
-
-# -------------------- HEADER --------------------
 logo() {
     echo
     printf "${PURPLE}"
@@ -108,7 +82,10 @@ EOF
     echo
 }
 
-# -------------------- INTRO --------------------
+# ============================================================
+#                     INTRO ANIMATION
+# ============================================================
+
 intro() {
     clear
     hide_cursor
@@ -117,7 +94,7 @@ intro() {
         "  ${PURPLE}◆${RESET} Initializing KINGCLOUD..."
         "  ${CYAN}◆${RESET} Loading Docker Control Center..."
         "  ${BLUE}◆${RESET} Connecting to container engine..."
-        "  ${LIGHT_PURPLE}◆${RESET} Loading management modules..."
+        "  ${LIGHT_PURPLE}◆${RESET} Loading authentication..."
         "  ${GREEN}◆${RESET} KINGCLOUD is ready."
     )
 
@@ -131,24 +108,32 @@ intro() {
     clear
 }
 
-# -------------------- DOCKER CHECK --------------------
+# ============================================================
+#                    DOCKER CHECK
+# ============================================================
+
 docker_check() {
+
     if ! command -v docker >/dev/null 2>&1; then
+
         echo
         printf "  ${RED}✖ Docker is not installed.${RESET}\n"
         echo
+
         read -rp "  Install Docker now? [y/N]: " ans
 
         if [[ "$ans" =~ ^[Yy]$ ]]; then
+
             clear
             logo
+
             printf "  ${PURPLE}Installing Docker...${RESET}\n\n"
 
             if command -v apt >/dev/null 2>&1; then
                 apt update -y
                 apt install -y docker.io
             else
-                echo "  ${RED}Unsupported package manager.${RESET}"
+                printf "  ${RED}Unsupported package manager.${RESET}\n"
                 pause_screen
                 return 1
             fi
@@ -159,23 +144,25 @@ docker_check() {
             }
 
             if ! command -v docker >/dev/null 2>&1; then
-                echo "  ${RED}Docker installation failed.${RESET}"
+                printf "  ${RED}Docker installation failed.${RESET}\n"
                 pause_screen
                 return 1
             fi
 
-            echo
             printf "  ${GREEN}✔ Docker installed successfully.${RESET}\n"
             sleep 1
+
         else
             return 1
         fi
     fi
 
     if ! docker info >/dev/null 2>&1; then
+
         echo
         printf "  ${RED}✖ Docker daemon is not accessible.${RESET}\n"
-        echo "  ${GRAY}Try starting Docker and run the script again.${RESET}"
+        printf "  ${GRAY}Start Docker and run the script again.${RESET}\n"
+
         pause_screen
         return 1
     fi
@@ -183,8 +170,123 @@ docker_check() {
     return 0
 }
 
-# -------------------- CONTAINER LIST --------------------
+# ============================================================
+#                 PASSWORD HASH SYSTEM
+# ============================================================
+
+hash_password() {
+
+    local password="$1"
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$password" | sha256sum | awk '{print $1}'
+    else
+        printf '%s' "$password" | shasum -a 256 | awk '{print $1}'
+    fi
+}
+
+save_credentials() {
+
+    local name="$1"
+    local username="$2"
+    local password="$3"
+
+    local file="${CRED_DIR}/${name}.cred"
+    local hash
+
+    hash=$(hash_password "$password")
+
+    {
+        echo "username=$username"
+        echo "password_hash=$hash"
+    } > "$file"
+
+    chmod 600 "$file"
+}
+
+get_username() {
+
+    local name="$1"
+    local file="${CRED_DIR}/${name}.cred"
+
+    if [ -f "$file" ]; then
+        sed -n 's/^username=//p' "$file"
+    fi
+}
+
+get_password_hash() {
+
+    local name="$1"
+    local file="${CRED_DIR}/${name}.cred"
+
+    if [ -f "$file" ]; then
+        sed -n 's/^password_hash=//p' "$file"
+    fi
+}
+
+verify_credentials() {
+
+    local name="$1"
+    local username="$2"
+    local password="$3"
+
+    local saved_user
+    local saved_hash
+    local entered_hash
+
+    saved_user=$(get_username "$name")
+    saved_hash=$(get_password_hash "$name")
+    entered_hash=$(hash_password "$password")
+
+    [ "$username" = "$saved_user" ] &&
+    [ "$entered_hash" = "$saved_hash" ]
+}
+
+delete_credentials() {
+
+    local name="$1"
+
+    rm -f "${CRED_DIR}/${name}.cred"
+}
+
+# ============================================================
+#              INSTALL USER INSIDE CONTAINER
+# ============================================================
+
+setup_container_user() {
+
+    local name="$1"
+    local username="$2"
+    local password="$3"
+
+    docker exec "$name" bash -c "
+        apt-get update -qq >/dev/null 2>&1 &&
+        apt-get install -y -qq sudo >/dev/null 2>&1 || true
+
+        if ! id '$username' >/dev/null 2>&1; then
+            useradd -m -s /bin/bash '$username'
+        fi
+
+        echo '$username:$password' | chpasswd
+
+        usermod -aG sudo '$username' 2>/dev/null || true
+
+        echo '$username ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/kingcloud-$username
+        chmod 440 /etc/sudoers.d/kingcloud-$username
+
+        mkdir -p /home/$username
+        chown -R $username:$username /home/$username
+    " >/tmp/kc_user_setup.log 2>&1
+
+    return $?
+}
+
+# ============================================================
+#                    CONTAINER LIST
+# ============================================================
+
 get_containers() {
+
     mapfile -t CONTAINERS < <(
         docker ps -a \
             --filter "label=$LABEL" \
@@ -192,24 +294,30 @@ get_containers() {
     )
 }
 
-container_count() {
-    get_containers
-    echo "${#CONTAINERS[@]}"
-}
+container_status() {
 
-# -------------------- STATUS --------------------
-status_value() {
     local name="$1"
-    docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null
+
+    docker inspect \
+        -f '{{.State.Status}}' \
+        "$name" 2>/dev/null
 }
 
 is_suspended() {
+
     local name="$1"
-    docker inspect -f '{{index .Config.Labels "kingcloud.suspended"}}' "$name" 2>/dev/null
+
+    docker inspect \
+        -f '{{index .Config.Labels "kingcloud.suspended"}}' \
+        "$name" 2>/dev/null
 }
 
-# -------------------- DASHBOARD --------------------
+# ============================================================
+#                    DASHBOARD
+# ============================================================
+
 dashboard() {
+
     get_containers
 
     local total=${#CONTAINERS[@]}
@@ -218,8 +326,9 @@ dashboard() {
     local suspended=0
 
     for name in "${CONTAINERS[@]}"; do
+
         local status
-        status=$(status_value "$name")
+        status=$(container_status "$name")
 
         if [ "$status" = "running" ]; then
             running=$((running + 1))
@@ -230,6 +339,7 @@ dashboard() {
         if [ "$(is_suspended "$name")" = "true" ]; then
             suspended=$((suspended + 1))
         fi
+
     done
 
     printf "  ${GREEN}●${RESET} Running    : ${WHITE}${running}${RESET}\n"
@@ -238,12 +348,16 @@ dashboard() {
     printf "  ${RED}●${RESET} Stopped    : ${WHITE}${stopped}${RESET}\n"
 }
 
-# -------------------- MAIN SCREEN --------------------
+# ============================================================
+#                     MAIN SCREEN
+# ============================================================
+
 main_screen() {
+
     clear
     logo
 
-    printf "  ${GRAY}Docker  •  Containers  •  Control  •  Monitoring${RESET}\n"
+    printf "  ${GRAY}Docker  •  Containers  •  Authentication  •  Control${RESET}\n"
     echo
 
     dashboard
@@ -252,41 +366,48 @@ main_screen() {
     line
     echo
 
-    printf "  ${PURPLE}${BOLD}[1]${RESET}  🚀 Create Container\n"
-    printf "  ${CYAN}${BOLD}[2]${RESET}  📋 Container List\n"
-    printf "  ${BLUE}${BOLD}[3]${RESET}  🖥  Open Console\n"
-    printf "  ${GREEN}${BOLD}[4]${RESET}  ▶  Start Container\n"
-    printf "  ${RED}${BOLD}[5]${RESET}  ■  Stop Container\n"
-    printf "  ${PURPLE}${BOLD}[6]${RESET}  🔄 Restart Container\n"
-    printf "  ${YELLOW}${BOLD}[7]${RESET}  🗑  Delete Container\n"
-    printf "  ${YELLOW}${BOLD}[8]${RESET}  🔒 Suspend Container\n"
-    printf "  ${GREEN}${BOLD}[9]${RESET}  🔓 Unsuspend Container\n"
-    printf "  ${CYAN}${BOLD}[10]${RESET} 📜 Container Logs\n"
-    printf "  ${BLUE}${BOLD}[11]${RESET} 📊 Resource Monitor\n"
-    printf "  ${PURPLE}${BOLD}[12]${RESET} ⚡ Bulk Controls\n"
-    printf "  ${CYAN}${BOLD}[13]${RESET} 🔍 Inspect Container\n"
-    printf "  ${LIGHT_PURPLE}${BOLD}[14]${RESET} 🧰 Execute Command\n"
-    printf "  ${YELLOW}${BOLD}[15]${RESET} ✨ About & Features\n"
-    printf "  ${RED}${BOLD}[0]${RESET}  Exit\n"
+    printf "  ${PURPLE}${BOLD}[1]${RESET}   🚀 Create Container\n"
+    printf "  ${CYAN}${BOLD}[2]${RESET}   📋 Container List\n"
+    printf "  ${BLUE}${BOLD}[3]${RESET}   🖥  Open Console\n"
+    printf "  ${GREEN}${BOLD}[4]${RESET}   ▶  Start Container\n"
+    printf "  ${RED}${BOLD}[5]${RESET}   ■  Stop Container\n"
+    printf "  ${PURPLE}${BOLD}[6]${RESET}   🔄 Restart Container\n"
+    printf "  ${YELLOW}${BOLD}[7]${RESET}   🗑  Delete Container\n"
+    printf "  ${YELLOW}${BOLD}[8]${RESET}   🔒 Suspend Container\n"
+    printf "  ${GREEN}${BOLD}[9]${RESET}   🔓 Unsuspend Container\n"
+    printf "  ${CYAN}${BOLD}[10]${RESET}  📜 Container Logs\n"
+    printf "  ${BLUE}${BOLD}[11]${RESET}  📊 Resource Monitor\n"
+    printf "  ${PURPLE}${BOLD}[12]${RESET}  ⚡ Bulk Controls\n"
+    printf "  ${CYAN}${BOLD}[13]${RESET}  🔍 Inspect Container\n"
+    printf "  ${LIGHT_PURPLE}${BOLD}[14]${RESET}  🧰 Execute Command\n"
+    printf "  ${YELLOW}${BOLD}[15]${RESET}  ✨ About & Features\n"
+    printf "  ${RED}${BOLD}[0]${RESET}   Exit\n"
 
     echo
     line
-    printf "  ${GRAY}KINGCLOUD • Fast • Simple • Powerful${RESET}\n"
+    printf "  ${GRAY}KINGCLOUD • Fast • Secure • Powerful${RESET}\n"
     echo
 }
 
-# -------------------- CREATE --------------------
+# ============================================================
+#                 CREATE CONTAINER
+# ============================================================
+
 create_container() {
+
     clear
     logo
 
-    printf "  ${PURPLE}${BOLD}CREATE CONTAINER${RESET}\n"
+    printf "  ${PURPLE}${BOLD}CREATE KINGCLOUD CONTAINER${RESET}\n"
     line
     echo
 
-    read -rp "  Container name: " NAME
+    # ONLY NAME
+    read -rp "  ${WHITE}Container name:${RESET} " NAME
 
-    NAME=$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' )
+    NAME=$(echo "$NAME" |
+        tr '[:upper:]' '[:lower:]' |
+        tr ' ' '-')
 
     if [ -z "$NAME" ]; then
         printf "  ${RED}✖ Name cannot be empty.${RESET}\n"
@@ -294,73 +415,142 @@ create_container() {
         return
     fi
 
-    if docker ps -a --format '{{.Names}}' | grep -Fxq "$NAME"; then
-        printf "  ${RED}✖ Container already exists.${RESET}\n"
+    if ! [[ "$NAME" =~ ^[a-z0-9][a-z0-9_.-]*$ ]]; then
+        printf "  ${RED}✖ Invalid container name.${RESET}\n"
+        printf "  ${GRAY}Use letters, numbers, -, _ or .${RESET}\n"
         pause_screen
         return
     fi
 
-    read -rp "  Hostname [$NAME]: " HOSTNAME
-    HOSTNAME=${HOSTNAME:-$NAME}
+    if docker ps -a --format '{{.Names}}' |
+        grep -Fxq "$NAME"; then
 
-    read -rp "  Memory limit [unlimited]: " MEMORY
-    read -rp "  CPU limit [unlimited]: " CPU
+        printf "  ${RED}✖ Container '$NAME' already exists.${RESET}\n"
+        pause_screen
+        return
+    fi
 
     echo
-    printf "  ${GRAY}Preparing Ubuntu 24.04 image...${RESET}\n"
 
-    docker image inspect "$IMAGE" >/dev/null 2>&1 || {
-        run_loading "Pulling Ubuntu image" docker pull "$IMAGE"
-    }
+    # USERNAME
+    read -rp "  ${WHITE}Username:${RESET} " USERNAME
+
+    if [ -z "$USERNAME" ]; then
+        printf "  ${RED}✖ Username cannot be empty.${RESET}\n"
+        pause_screen
+        return
+    fi
+
+    if ! [[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+        printf "  ${RED}✖ Invalid username.${RESET}\n"
+        pause_screen
+        return
+    fi
+
+    # PASSWORD
+    echo
+    read -rsp "  ${WHITE}Password:${RESET} " PASSWORD
+    echo
+
+    if [ -z "$PASSWORD" ]; then
+        printf "  ${RED}✖ Password cannot be empty.${RESET}\n"
+        pause_screen
+        return
+    fi
+
+    if [ "${#PASSWORD}" -lt 4 ]; then
+        printf "  ${RED}✖ Password must be at least 4 characters.${RESET}\n"
+        pause_screen
+        return
+    fi
+
+    echo
+    printf "  ${PURPLE}Preparing container...${RESET}\n"
+
+    # Pull image if needed
+    if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+
+        docker pull "$IMAGE" >/tmp/kc_pull.log 2>&1 &
+
+        local PID=$!
+        local chars='|/-\'
+        local i=0
+
+        hide_cursor
+
+        while kill -0 "$PID" 2>/dev/null; do
+            printf "\r  ${PURPLE}${chars:i++%4:1}${RESET} Pulling Ubuntu 24.04..."
+            sleep 0.1
+        done
+
+        wait "$PID"
+
+        printf "\r\033[K"
+        show_cursor
+    fi
 
     echo
     printf "  ${PURPLE}Creating ${WHITE}$NAME${PURPLE}...${RESET}\n"
 
-    CMD=(docker run -dit
-        --name "$NAME"
-        --hostname "$HOSTNAME"
-        --label "$LABEL"
-        --label "kingcloud.suspended=false"
-        --restart unless-stopped
-        "$IMAGE"
-        /bin/bash
-    )
+    docker run -dit \
+        --name "$NAME" \
+        --hostname "$NAME" \
+        --label "$LABEL" \
+        --label "kingcloud.suspended=false" \
+        --restart unless-stopped \
+        "$IMAGE" \
+        /bin/bash >/tmp/kc_create.log 2>&1
 
-    [ -n "$MEMORY" ] && CMD+=(--memory "$MEMORY")
-    [ -n "$CPU" ] && CMD+=(--cpus "$CPU")
+    if [ $? -ne 0 ]; then
 
-    # Rebuild command correctly with resource arguments before image.
-    CMD=(docker run -dit
-        --name "$NAME"
-        --hostname "$HOSTNAME"
-        --label "$LABEL"
-        --label "kingcloud.suspended=false"
-        --restart unless-stopped
-    )
-
-    [ -n "$MEMORY" ] && CMD+=(--memory "$MEMORY")
-    [ -n "$CPU" ] && CMD+=(--cpus "$CPU")
-
-    CMD+=("$IMAGE" /bin/bash)
-
-    "${CMD[@]}" >/tmp/kc_create.log 2>&1
-
-    if [ $? -eq 0 ]; then
-        echo
-        printf "  ${GREEN}✔ Container created successfully!${RESET}\n"
-        printf "  ${GRAY}Name:${RESET} $NAME\n"
-        printf "  ${GRAY}Image:${RESET} $IMAGE\n"
-    else
-        echo
-        printf "  ${RED}✖ Creation failed.${RESET}\n"
+        printf "  ${RED}✖ Container creation failed.${RESET}\n"
         sed 's/^/  /' /tmp/kc_create.log
+
+        pause_screen
+        return
     fi
+
+    echo
+    printf "  ${CYAN}Setting up user account...${RESET}\n"
+
+    setup_container_user "$NAME" "$USERNAME" "$PASSWORD"
+
+    if [ $? -ne 0 ]; then
+
+        printf "  ${RED}✖ User setup failed.${RESET}\n"
+        printf "  ${GRAY}Container was created but credentials could not be configured.${RESET}\n"
+
+        pause_screen
+        return
+    fi
+
+    # Save only hash locally
+    save_credentials "$NAME" "$USERNAME" "$PASSWORD"
+
+    echo
+    printf "  ${GREEN}╔══════════════════════════════════════════════╗${RESET}\n"
+    printf "  ${GREEN}║       ✔ CONTAINER CREATED SUCCESSFULLY      ║${RESET}\n"
+    printf "  ${GREEN}╚══════════════════════════════════════════════╝${RESET}\n"
+
+    echo
+    printf "  ${GRAY}Container:${RESET} ${WHITE}$NAME${RESET}\n"
+    printf "  ${GRAY}Username :${RESET} ${WHITE}$USERNAME${RESET}\n"
+    printf "  ${GRAY}Password :${RESET} ${GREEN}Configured${RESET}\n"
+    printf "  ${GRAY}Memory   :${RESET} ${GREEN}Not requested${RESET}\n"
+    printf "  ${GRAY}CPU      :${RESET} ${GREEN}Not requested${RESET}\n"
+
+    echo
+    printf "  ${GREEN}✔ Ready to use.${RESET}\n"
 
     pause_screen
 }
 
-# -------------------- SELECT CONTAINER --------------------
+# ============================================================
+#                 SELECT CONTAINER
+# ============================================================
+
 select_container() {
+
     get_containers
 
     if [ "${#CONTAINERS[@]}" -eq 0 ]; then
@@ -369,24 +559,34 @@ select_container() {
     fi
 
     echo
+
     for i in "${!CONTAINERS[@]}"; do
+
         local name="${CONTAINERS[$i]}"
         local status
-        status=$(status_value "$name")
+
+        status=$(container_status "$name")
 
         if [ "$(is_suspended "$name")" = "true" ]; then
+
             printf "  ${YELLOW}%2d${RESET}  %-25s ${YELLOW}[SUSPENDED]${RESET}\n" \
                 "$((i+1))" "$name"
+
         elif [ "$status" = "running" ]; then
+
             printf "  ${GREEN}%2d${RESET}  %-25s ${GREEN}[%s]${RESET}\n" \
                 "$((i+1))" "$name" "$status"
+
         else
+
             printf "  ${RED}%2d${RESET}  %-25s ${RED}[%s]${RESET}\n" \
                 "$((i+1))" "$name" "$status"
+
         fi
     done
 
     echo
+
     read -rp "  Select number: " CHOICE
 
     if ! [[ "$CHOICE" =~ ^[0-9]+$ ]]; then
@@ -395,16 +595,22 @@ select_container() {
 
     local index=$((CHOICE - 1))
 
-    if [ "$index" -lt 0 ] || [ "$index" -ge "${#CONTAINERS[@]}" ]; then
+    if [ "$index" -lt 0 ] ||
+       [ "$index" -ge "${#CONTAINERS[@]}" ]; then
         return 1
     fi
 
     SELECTED="${CONTAINERS[$index]}"
+
     return 0
 }
 
-# -------------------- LIST --------------------
+# ============================================================
+#                       LIST
+# ============================================================
+
 list_containers() {
+
     clear
     logo
 
@@ -420,70 +626,83 @@ list_containers() {
         return
     fi
 
-    printf "  ${GRAY}%-24s %-12s %-18s${RESET}\n" "NAME" "STATUS" "IMAGE"
+    printf "  ${GRAY}%-24s %-14s %-18s${RESET}\n" \
+        "NAME" "STATUS" "IMAGE"
+
     line
 
     for name in "${CONTAINERS[@]}"; do
-        local status
-        status=$(status_value "$name")
 
-        if [ "$status" = "running" ]; then
-            printf "  ${GREEN}%-24s${RESET} ${GREEN}%-12s${RESET} %-18s\n" \
+        local status
+        status=$(container_status "$name")
+
+        if [ "$(is_suspended "$name")" = "true" ]; then
+
+            printf "  ${YELLOW}%-24s${RESET} ${YELLOW}%-14s${RESET} %-18s\n" \
+                "$name" "suspended" "$IMAGE"
+
+        elif [ "$status" = "running" ]; then
+
+            printf "  ${GREEN}%-24s${RESET} ${GREEN}%-14s${RESET} %-18s\n" \
                 "$name" "$status" "$IMAGE"
+
         else
-            printf "  ${RED}%-24s${RESET} ${RED}%-12s${RESET} %-18s\n" \
+
+            printf "  ${RED}%-24s${RESET} ${RED}%-14s${RESET} %-18s\n" \
                 "$name" "$status" "$IMAGE"
+
         fi
+
     done
 
     echo
     pause_screen
 }
 
-# -------------------- OPEN CONSOLE --------------------
-open_console() {
-    clear
-    logo
+# ============================================================
+#                 START AUTHENTICATION
+# ============================================================
 
-    printf "  ${PURPLE}${BOLD}OPEN CONSOLE${RESET}\n"
+authenticate_start() {
+
+    local name="$1"
+
+    echo
+    printf "  ${PURPLE}${BOLD}KINGCLOUD AUTHENTICATION${RESET}\n"
     line
+    echo
 
-    if ! select_container; then
-        printf "  ${RED}Invalid selection.${RESET}\n"
-        pause_screen
-        return
+    printf "  ${GRAY}Starting:${RESET} ${WHITE}$name${RESET}\n\n"
+
+    read -rp "  ${WHITE}Username:${RESET} " LOGIN_USER
+
+    echo
+    read -rsp "  ${WHITE}Password:${RESET} " LOGIN_PASS
+    echo
+
+    echo
+
+    if verify_credentials "$name" "$LOGIN_USER" "$LOGIN_PASS"; then
+
+        printf "  ${GREEN}✔ Authentication successful.${RESET}\n"
+        return 0
+
+    else
+
+        printf "  ${RED}✖ Invalid username or password.${RESET}\n"
+        return 1
     fi
-
-    local name="$SELECTED"
-
-    if [ "$(is_suspended "$name")" = "true" ]; then
-        printf "  ${YELLOW}Container is suspended.${RESET}\n"
-        pause_screen
-        return
-    fi
-
-    if [ "$(status_value "$name")" != "running" ]; then
-        printf "  ${CYAN}Starting $name...${RESET}\n"
-        docker start "$name" >/dev/null
-    fi
-
-    clear
-    printf "${PURPLE}"
-    echo "╔══════════════════════════════════════════════════════════╗"
-    printf "║                 👑 KINGCLOUD CONSOLE                    ║\n"
-    printf "║                 %-36s ║\n" "$name"
-    echo "╚══════════════════════════════════════════════════════════╝"
-    printf "${RESET}\n"
-
-    docker exec -it "$name" /bin/bash
-
-    pause_screen
 }
 
-# -------------------- START --------------------
+# ============================================================
+#                       START
+# ============================================================
+
 start_container() {
+
     clear
     logo
+
     printf "  ${GREEN}${BOLD}START CONTAINER${RESET}\n"
     line
 
@@ -494,18 +713,55 @@ start_container() {
     fi
 
     if [ "$(is_suspended "$SELECTED")" = "true" ]; then
-        printf "  ${YELLOW}✖ Container is suspended. Unsuspend it first.${RESET}\n"
+
+        printf "\n  ${YELLOW}✖ Container is suspended.${RESET}\n"
+        printf "  ${GRAY}Use Unsuspend first.${RESET}\n"
+
+        pause_screen
+        return
+    fi
+
+    if [ "$(container_status "$SELECTED")" = "running" ]; then
+
+        printf "\n  ${CYAN}Container is already running.${RESET}\n"
+        pause_screen
+        return
+    fi
+
+    # USERNAME + PASSWORD REQUIRED
+    if ! authenticate_start "$SELECTED"; then
+        pause_screen
+        return
+    fi
+
+    echo
+    printf "  ${PURPLE}Starting container...${RESET}\n"
+
+    docker start "$SELECTED" >/tmp/kc_start.log 2>&1
+
+    if [ $? -eq 0 ]; then
+
+        printf "  ${GREEN}✔ $SELECTED started successfully.${RESET}\n"
+
     else
-        run_loading "Starting $SELECTED" docker start "$SELECTED"
+
+        printf "  ${RED}✖ Failed to start container.${RESET}\n"
+        sed 's/^/  /' /tmp/kc_start.log
+
     fi
 
     pause_screen
 }
 
-# -------------------- STOP --------------------
+# ============================================================
+#                       STOP
+# ============================================================
+
 stop_container() {
+
     clear
     logo
+
     printf "  ${RED}${BOLD}STOP CONTAINER${RESET}\n"
     line
 
@@ -515,14 +771,26 @@ stop_container() {
         return
     fi
 
-    run_loading "Stopping $SELECTED" docker stop "$SELECTED"
+    docker stop "$SELECTED" >/tmp/kc_stop.log 2>&1
+
+    if [ $? -eq 0 ]; then
+        printf "  ${GREEN}✔ $SELECTED stopped.${RESET}\n"
+    else
+        printf "  ${RED}✖ Failed to stop $SELECTED.${RESET}\n"
+    fi
+
     pause_screen
 }
 
-# -------------------- RESTART --------------------
+# ============================================================
+#                     RESTART
+# ============================================================
+
 restart_container() {
+
     clear
     logo
+
     printf "  ${PURPLE}${BOLD}RESTART CONTAINER${RESET}\n"
     line
 
@@ -533,18 +801,41 @@ restart_container() {
     fi
 
     if [ "$(is_suspended "$SELECTED")" = "true" ]; then
+
         printf "  ${YELLOW}✖ Container is suspended.${RESET}\n"
+        pause_screen
+        return
+    fi
+
+    if [ "$(container_status "$SELECTED")" != "running" ]; then
+
+        printf "  ${YELLOW}Container is stopped.${RESET}\n"
+        printf "  ${GRAY}Use Start to authenticate and start it.${RESET}\n"
+
+        pause_screen
+        return
+    fi
+
+    docker restart "$SELECTED" >/tmp/kc_restart.log 2>&1
+
+    if [ $? -eq 0 ]; then
+        printf "  ${GREEN}✔ $SELECTED restarted.${RESET}\n"
     else
-        run_loading "Restarting $SELECTED" docker restart "$SELECTED"
+        printf "  ${RED}✖ Restart failed.${RESET}\n"
     fi
 
     pause_screen
 }
 
-# -------------------- DELETE --------------------
+# ============================================================
+#                      DELETE
+# ============================================================
+
 delete_container() {
+
     clear
     logo
+
     printf "  ${RED}${BOLD}DELETE CONTAINER${RESET}\n"
     line
 
@@ -555,27 +846,58 @@ delete_container() {
     fi
 
     echo
-    printf "  ${RED}WARNING:${RESET} This permanently removes ${WHITE}$SELECTED${RESET}.\n"
+
+    printf "  ${RED}WARNING:${RESET} This permanently removes:\n"
+    printf "  ${WHITE}$SELECTED${RESET}\n\n"
+
     read -rp "  Type DELETE to confirm: " CONFIRM
 
     if [ "$CONFIRM" = "DELETE" ]; then
-        run_loading "Deleting $SELECTED" docker rm -f "$SELECTED"
+
+        docker rm -f "$SELECTED" >/tmp/kc_delete.log 2>&1
+
+        if [ $? -eq 0 ]; then
+
+            delete_credentials "$SELECTED"
+
+            printf "  ${GREEN}✔ $SELECTED deleted.${RESET}\n"
+
+        else
+
+            printf "  ${RED}✖ Delete failed.${RESET}\n"
+
+        fi
+
     else
+
         printf "  ${YELLOW}Cancelled.${RESET}\n"
+
     fi
 
     pause_screen
 }
 
-# -------------------- SUSPEND --------------------
+# ============================================================
+#                      SUSPEND
+# ============================================================
+
 suspend_container() {
+
     clear
     logo
+
     printf "  ${YELLOW}${BOLD}SUSPEND CONTAINER${RESET}\n"
     line
 
     if ! select_container; then
         printf "  ${RED}Invalid selection.${RESET}\n"
+        pause_screen
+        return
+    fi
+
+    if [ "$(is_suspended "$SELECTED")" = "true" ]; then
+
+        printf "  ${YELLOW}Already suspended.${RESET}\n"
         pause_screen
         return
     fi
@@ -586,56 +908,65 @@ suspend_container() {
         --restart=no \
         "$SELECTED" >/dev/null 2>&1
 
-    docker commit "$SELECTED" "$SELECTED:kingcloud-suspended" >/dev/null 2>&1
+    docker update \
+        --label-add "kingcloud.suspended=true" \
+        "$SELECTED" >/dev/null 2>&1
 
-    docker rm "$SELECTED" >/dev/null 2>&1
+    printf "  ${YELLOW}🔒 $SELECTED suspended.${RESET}\n"
 
-    docker run -dit \
-        --name "$SELECTED" \
-        --hostname "$SELECTED" \
-        --label "$LABEL" \
-        --label "kingcloud.suspended=true" \
-        "$SELECTED:kingcloud-suspended" \
-        /bin/bash >/dev/null 2>&1
-
-    printf "  ${YELLOW}🔒 $SELECTED is now suspended.${RESET}\n"
     pause_screen
 }
 
-# -------------------- UNSUSPEND --------------------
+# ============================================================
+#                    UNSUSPEND
+# ============================================================
+
 unsuspend_container() {
+
     clear
     logo
+
     printf "  ${GREEN}${BOLD}UNSUSPEND CONTAINER${RESET}\n"
     line
+    echo
 
     get_containers
 
     local found=0
 
     for name in "${CONTAINERS[@]}"; do
+
         if [ "$(is_suspended "$name")" = "true" ]; then
+
             found=1
-            printf "  ${YELLOW}•${RESET} $name\n"
+            printf "  ${YELLOW}•${RESET} $name"
+
+            echo
         fi
+
     done
 
     if [ "$found" -eq 0 ]; then
-        printf "  ${GRAY}No suspended containers.${RESET}\n"
+
+        printf "\n  ${GRAY}No suspended containers.${RESET}\n"
         pause_screen
         return
     fi
 
     echo
-    read -rp "  Enter container name to unsuspend: " NAME
 
-    if ! docker ps -a --format '{{.Names}}' | grep -Fxq "$NAME"; then
-        printf "  ${RED}Container not found.${RESET}\n"
+    read -rp "  Enter container name: " NAME
+
+    if ! docker ps -a --format '{{.Names}}' |
+        grep -Fxq "$NAME"; then
+
+        printf "  ${RED}✖ Container not found.${RESET}\n"
         pause_screen
         return
     fi
 
     if [ "$(is_suspended "$NAME")" != "true" ]; then
+
         printf "  ${YELLOW}Container is not suspended.${RESET}\n"
         pause_screen
         return
@@ -649,16 +980,80 @@ unsuspend_container() {
         --label-add "kingcloud.suspended=false" \
         "$NAME" >/dev/null 2>&1
 
+    # Authentication before starting unsuspended container
+    if ! authenticate_start "$NAME"; then
+        pause_screen
+        return
+    fi
+
     docker start "$NAME" >/dev/null 2>&1
 
-    printf "  ${GREEN}✔ $NAME unsuspended and started.${RESET}\n"
+    if [ $? -eq 0 ]; then
+        printf "  ${GREEN}✔ $NAME unsuspended and started.${RESET}\n"
+    else
+        printf "  ${RED}✖ Failed to start $NAME.${RESET}\n"
+    fi
+
     pause_screen
 }
 
-# -------------------- LOGS --------------------
-container_logs() {
+# ============================================================
+#                      CONSOLE
+# ============================================================
+
+open_console() {
+
     clear
     logo
+
+    printf "  ${PURPLE}${BOLD}OPEN CONSOLE${RESET}\n"
+    line
+
+    if ! select_container; then
+        printf "  ${RED}Invalid selection.${RESET}\n"
+        pause_screen
+        return
+    fi
+
+    if [ "$(is_suspended "$SELECTED")" = "true" ]; then
+
+        printf "  ${YELLOW}✖ Container is suspended.${RESET}\n"
+        pause_screen
+        return
+    fi
+
+    if [ "$(container_status "$SELECTED")" != "running" ]; then
+
+        printf "  ${YELLOW}Container is stopped.${RESET}\n"
+        printf "  ${GRAY}Start it first using Start Container.${RESET}\n"
+
+        pause_screen
+        return
+    fi
+
+    clear
+
+    printf "${PURPLE}${BOLD}"
+    echo "╔══════════════════════════════════════════════════════════╗"
+    printf "║                 👑 KINGCLOUD CONSOLE                    ║\n"
+    printf "║                 %-36s ║\n" "$SELECTED"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    printf "${RESET}\n"
+
+    docker exec -it "$SELECTED" /bin/bash
+
+    pause_screen
+}
+
+# ============================================================
+#                       LOGS
+# ============================================================
+
+container_logs() {
+
+    clear
+    logo
+
     printf "  ${CYAN}${BOLD}CONTAINER LOGS${RESET}\n"
     line
 
@@ -669,9 +1064,10 @@ container_logs() {
     fi
 
     clear
+
     printf "${PURPLE}${BOLD}"
     echo "╔══════════════════════════════════════════════════════════╗"
-    printf "║                 📜 CONTAINER LOGS                        ║\n"
+    printf "║                    📜 LOGS                              ║\n"
     printf "║                 %-36s ║\n" "$SELECTED"
     echo "╚══════════════════════════════════════════════════════════╝"
     printf "${RESET}\n"
@@ -681,8 +1077,12 @@ container_logs() {
     pause_screen
 }
 
-# -------------------- RESOURCE MONITOR --------------------
+# ============================================================
+#                  RESOURCE MONITOR
+# ============================================================
+
 resource_monitor() {
+
     clear
     logo
 
@@ -707,9 +1107,14 @@ resource_monitor() {
     pause_screen
 }
 
-# -------------------- BULK CONTROLS --------------------
+# ============================================================
+#                    BULK CONTROLS
+# ============================================================
+
 bulk_controls() {
+
     while true; do
+
         clear
         logo
 
@@ -720,57 +1125,97 @@ bulk_controls() {
         printf "  ${GREEN}[1]${RESET} ▶ Start All\n"
         printf "  ${RED}[2]${RESET} ■ Stop All\n"
         printf "  ${PURPLE}[3]${RESET} 🔄 Restart All\n"
-        printf "  ${CYAN}[4]${RESET} 📋 Refresh Status\n"
+        printf "  ${CYAN}[4]${RESET} 📋 Refresh\n"
         printf "  ${GRAY}[0]${RESET} ← Back\n"
 
         echo
         read -rp "  Select: " B
 
         case "$B" in
+
             1)
+
                 get_containers
+
                 for name in "${CONTAINERS[@]}"; do
-                    if [ "$(is_suspended "$name")" != "true" ]; then
-                        docker start "$name" >/dev/null 2>&1
+
+                    if [ "$(is_suspended "$name")" != "true" ] &&
+                       [ "$(container_status "$name")" != "running" ]; then
+
+                        echo
+                        printf "  ${WHITE}$name${RESET}\n"
+
+                        if authenticate_start "$name"; then
+                            docker start "$name" >/dev/null 2>&1
+                            printf "  ${GREEN}✔ Started${RESET}\n"
+                        else
+                            printf "  ${RED}✖ Skipped${RESET}\n"
+                        fi
+
                     fi
+
                 done
-                printf "  ${GREEN}✔ All eligible containers started.${RESET}\n"
+
                 pause_screen
                 ;;
+
             2)
+
                 get_containers
+
                 for name in "${CONTAINERS[@]}"; do
                     docker stop "$name" >/dev/null 2>&1
                 done
+
                 printf "  ${GREEN}✔ All containers stopped.${RESET}\n"
+
                 pause_screen
                 ;;
+
             3)
+
                 get_containers
+
                 for name in "${CONTAINERS[@]}"; do
-                    if [ "$(is_suspended "$name")" != "true" ]; then
+
+                    if [ "$(is_suspended "$name")" != "true" ] &&
+                       [ "$(container_status "$name")" = "running" ]; then
+
                         docker restart "$name" >/dev/null 2>&1
+
                     fi
+
                 done
-                printf "  ${GREEN}✔ All eligible containers restarted.${RESET}\n"
+
+                printf "  ${GREEN}✔ Running containers restarted.${RESET}\n"
+
                 pause_screen
                 ;;
+
             4)
                 pause_screen
                 ;;
+
             0)
                 return
                 ;;
+
             *)
                 printf "  ${RED}Invalid option.${RESET}\n"
                 sleep 1
                 ;;
+
         esac
+
     done
 }
 
-# -------------------- INSPECT --------------------
+# ============================================================
+#                       INSPECT
+# ============================================================
+
 inspect_container() {
+
     clear
     logo
 
@@ -784,13 +1229,22 @@ inspect_container() {
     fi
 
     echo
-    docker inspect "$SELECTED" | less -R
+
+    if command -v less >/dev/null 2>&1; then
+        docker inspect "$SELECTED" | less -R
+    else
+        docker inspect "$SELECTED"
+    fi
 
     pause_screen
 }
 
-# -------------------- EXEC COMMAND --------------------
+# ============================================================
+#                  EXECUTE COMMAND
+# ============================================================
+
 execute_command() {
+
     clear
     logo
 
@@ -803,19 +1257,27 @@ execute_command() {
         return
     fi
 
-    if [ "$(status_value "$SELECTED")" != "running" ]; then
+    if [ "$(container_status "$SELECTED")" != "running" ]; then
+
         printf "  ${YELLOW}Container is not running.${RESET}\n"
+
         read -rp "  Start it? [Y/n]: " A
 
-        if [[ ! "$A" =~ ^[Nn]$ ]]; then
-            docker start "$SELECTED" >/dev/null 2>&1
-        else
+        if [[ "$A" =~ ^[Nn]$ ]]; then
             pause_screen
             return
         fi
+
+        if ! authenticate_start "$SELECTED"; then
+            pause_screen
+            return
+        fi
+
+        docker start "$SELECTED" >/dev/null 2>&1
     fi
 
     echo
+
     read -rp "  Command: " COMMAND
 
     if [ -z "$COMMAND" ]; then
@@ -833,8 +1295,12 @@ execute_command() {
     pause_screen
 }
 
-# -------------------- ABOUT --------------------
+# ============================================================
+#                    ABOUT / FEATURES
+# ============================================================
+
 about_features() {
+
     clear
     logo
 
@@ -843,31 +1309,35 @@ about_features() {
     echo
 
     printf "  ${PURPLE}◆${RESET} Premium Terminal GUI\n"
-    printf "  ${PURPLE}◆${RESET} Animated loading system\n"
-    printf "  ${PURPLE}◆${RESET} Docker container management\n"
-    printf "  ${PURPLE}◆${RESET} Create / Start / Stop / Restart\n"
-    printf "  ${PURPLE}◆${RESET} Delete with confirmation\n"
-    printf "  ${PURPLE}◆${RESET} Suspend / Unsuspend system\n"
-    printf "  ${PURPLE}◆${RESET} Live Docker resource monitor\n"
-    printf "  ${PURPLE}◆${RESET} Container console access\n"
-    printf "  ${PURPLE}◆${RESET} Container logs viewer\n"
-    printf "  ${PURPLE}◆${RESET} Docker inspect viewer\n"
-    printf "  ${PURPLE}◆${RESET} Custom command executor\n"
-    printf "  ${PURPLE}◆${RESET} Bulk Start / Stop / Restart\n"
-    printf "  ${PURPLE}◆${RESET} Ubuntu 24.04 base image\n"
-    printf "  ${PURPLE}◆${RESET} Memory / CPU limits\n"
-    printf "  ${PURPLE}◆${RESET} Auto restart support\n"
-    printf "  ${PURPLE}◆${RESET} KINGCLOUD purple-black theme\n"
+    printf "  ${PURPLE}◆${RESET} Animated startup\n"
+    printf "  ${PURPLE}◆${RESET} Username + Password authentication\n"
+    printf "  ${PURPLE}◆${RESET} Create with only Name / Username / Password\n"
+    printf "  ${PURPLE}◆${RESET} Start authentication\n"
+    printf "  ${PURPLE}◆${RESET} Container console\n"
+    printf "  ${PURPLE}◆${RESET} Start / Stop / Restart\n"
+    printf "  ${PURPLE}◆${RESET} Suspend / Unsuspend\n"
+    printf "  ${PURPLE}◆${RESET} Delete protection\n"
+    printf "  ${PURPLE}◆${RESET} Container logs\n"
+    printf "  ${PURPLE}◆${RESET} Resource monitor\n"
+    printf "  ${PURPLE}◆${RESET} Docker inspect\n"
+    printf "  ${PURPLE}◆${RESET} Execute commands\n"
+    printf "  ${PURPLE}◆${RESET} Bulk controls\n"
+    printf "  ${PURPLE}◆${RESET} Ubuntu 24.04\n"
+    printf "  ${PURPLE}◆${RESET} No memory prompt\n"
+    printf "  ${PURPLE}◆${RESET} No CPU prompt\n"
 
     echo
     line
+
     printf "  ${GRAY}KINGCLOUD Container Control Center${RESET}\n"
-    printf "  ${GRAY}Built for fast terminal management.${RESET}\n"
 
     pause_screen
 }
 
-# -------------------- MAIN LOOP --------------------
+# ============================================================
+#                      MAIN LOOP
+# ============================================================
+
 intro
 
 if ! docker_check; then
@@ -881,6 +1351,7 @@ while true; do
     read -rp "  ${PURPLE}KINGCLOUD${RESET} › " OPTION
 
     case "$OPTION" in
+
         1)  create_container ;;
         2)  list_containers ;;
         3)  open_console ;;
@@ -898,18 +1369,24 @@ while true; do
         15) about_features ;;
 
         0)
+
             clear
+
             printf "\n"
             printf "  ${PURPLE}👑 KINGCLOUD${RESET}\n"
             printf "  ${GRAY}Container Control Center closed.${RESET}\n\n"
+
             show_cursor
             exit 0
             ;;
 
         *)
-            printf "\n  ${RED}✖ Invalid option.${RESET}\n"
+
+            printf "\n"
+            printf "  ${RED}✖ Invalid option.${RESET}\n"
             sleep 1
             ;;
+
     esac
 
 done
