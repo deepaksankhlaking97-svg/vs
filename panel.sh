@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # ============================================================
-#                 👑 KINGCLOUD PANEL HUB
-#                  PufferPanel Manager
+#                    👑 KING PANEL HUB
+#                    Premium Panel Manager
 # ============================================================
 
 set -u
@@ -10,7 +10,6 @@ set -u
 # ---------------- COLORS ----------------
 RESET="\033[0m"
 BOLD="\033[1m"
-DIM="\033[2m"
 
 PURPLE="\033[38;5;141m"
 CYAN="\033[38;5;51m"
@@ -20,10 +19,11 @@ YELLOW="\033[38;5;226m"
 WHITE="\033[97m"
 GRAY="\033[90m"
 
-# ---------------- SETTINGS ----------------
-LOG_FILE="/tmp/kingcloud-pufferpanel.log"
+LOG_FILE="/tmp/king-panel.log"
 
-# ---------------- FUNCTIONS ----------------
+# ============================================================
+#                       BASIC FUNCTIONS
+# ============================================================
 
 clear_screen() {
     clear
@@ -39,7 +39,28 @@ pause_screen() {
     read -r
 }
 
+ok() {
+    echo -e "${GREEN}✔${RESET} $1"
+}
+
+fail() {
+    echo -e "${RED}✘${RESET} $1"
+}
+
+info() {
+    echo -e "${CYAN}➜${RESET} $1"
+}
+
+warning() {
+    echo -e "${YELLOW}⚠${RESET} $1"
+}
+
+# ============================================================
+#                         BANNER
+# ============================================================
+
 banner() {
+
     clear_screen
 
     echo
@@ -52,126 +73,271 @@ banner() {
     echo "     ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═════╝╚══════╝ "
     echo -e "${RESET}"
 
-    echo -e "${CYAN}${BOLD}                 PANEL MANAGEMENT HUB${RESET}"
-    echo -e "${GRAY}                 PufferPanel Manager${RESET}"
+    echo -e "${CYAN}${BOLD}                    KING PANEL HUB${RESET}"
+    echo -e "${GRAY}                    Premium Manager${RESET}"
+
     echo
     line
     echo
 }
 
-spinner() {
-    local pid=$1
-    local text="$2"
-    local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-    local i=0
+# ============================================================
+#                    ROOT CHECK
+# ============================================================
 
-    while kill -0 "$pid" 2>/dev/null; do
-        printf "\r${CYAN}${spin:i++%${#spin}:1}${RESET} ${WHITE}%s${RESET}" "$text"
-        sleep 0.1
-    done
+check_root() {
 
-    printf "\r"
+    if [[ $EUID -ne 0 ]]; then
+        fail "Root permission required."
+        echo
+        echo -e "${GRAY}Run this script using:${RESET}"
+        echo -e "${WHITE}sudo bash script.sh${RESET}"
+        return 1
+    fi
+
+    return 0
 }
 
-run_silent() {
+# ============================================================
+#                 WAIT FOR APT LOCK
+# ============================================================
+
+wait_for_apt() {
+
+    local tries=0
+
+    while fuser \
+        /var/lib/dpkg/lock-frontend \
+        /var/lib/dpkg/lock \
+        /var/cache/apt/archives/lock \
+        >/dev/null 2>&1
+    do
+
+        tries=$((tries + 1))
+
+        if [[ $tries -gt 60 ]]; then
+            return 1
+        fi
+
+        printf "\r${CYAN}⠋${RESET} Waiting for package manager..."
+        sleep 2
+
+    done
+
+    printf "\r\033[K"
+
+    return 0
+}
+
+# ============================================================
+#                 FIX DPKG STATE
+# ============================================================
+
+fix_dpkg() {
+
+    dpkg --configure -a >>"$LOG_FILE" 2>&1 || true
+
+    apt-get -f install -y >>"$LOG_FILE" 2>&1 || true
+}
+
+# ============================================================
+#                  APT UPDATE WITH RETRY
+# ============================================================
+
+update_packages() {
+
+    wait_for_apt || return 1
+
+    local attempt=1
+
+    while [[ $attempt -le 3 ]]; do
+
+        if apt-get update \
+            -o Acquire::Retries=3 \
+            -o Dpkg::Use-Pty=0 \
+            >>"$LOG_FILE" 2>&1
+        then
+            return 0
+        fi
+
+        fix_dpkg
+
+        sleep 2
+
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
+
+# ============================================================
+#                    SILENT COMMAND
+# ============================================================
+
+run_quiet() {
+
+    local message="$1"
+    shift
+
+    echo -ne "${CYAN}⠋${RESET} ${WHITE}${message}${RESET}"
+
     "$@" >>"$LOG_FILE" 2>&1 &
     local pid=$!
 
-    spinner "$pid" "$2"
+    local dots=0
+
+    while kill -0 "$pid" 2>/dev/null; do
+
+        case $((dots % 4)) in
+            0) symbol="⠋" ;;
+            1) symbol="⠙" ;;
+            2) symbol="⠹" ;;
+            3) symbol="⠸" ;;
+        esac
+
+        printf "\r${CYAN}${symbol}${RESET} ${WHITE}${message}${RESET}"
+        dots=$((dots + 1))
+
+        sleep 0.12
+    done
 
     wait "$pid"
-    return $?
-}
+    local result=$?
 
-status_ok() {
-    echo -e "${GREEN}✔${RESET} $1"
-}
+    if [[ $result -eq 0 ]]; then
+        printf "\r\033[K"
+        ok "$message"
+    else
+        printf "\r\033[K"
+        fail "$message"
 
-status_fail() {
-    echo -e "${RED}✘${RESET} $1"
-}
+        echo -e "${GRAY}Detailed error: ${LOG_FILE}${RESET}"
+    fi
 
-status_info() {
-    echo -e "${CYAN}➜${RESET} $1"
+    return $result
 }
 
 # ============================================================
-#                    INSTALL PUFFERPANEL
+#                    INSTALL PANEL
 # ============================================================
 
-install_pufferpanel() {
+install_panel() {
 
     banner
 
-    echo -e "${CYAN}${BOLD}Installing PufferPanel${RESET}"
+    echo -e "${CYAN}${BOLD}Installing Panel${RESET}"
     echo
 
-    # Root check
-    if [[ $EUID -ne 0 ]]; then
-        status_fail "Please run this script as root."
-        echo
-        echo -e "${YELLOW}Use:${RESET} sudo bash installer.sh"
-        pause_screen
-        return
-    fi
-
-    # Already installed check
-    if command -v pufferpanel >/dev/null 2>&1; then
-        status_info "PufferPanel is already installed."
-        echo
+    if ! check_root; then
         pause_screen
         return
     fi
 
     rm -f "$LOG_FILE"
+    touch "$LOG_FILE"
 
-    # Step 1
-    if run_silent apt-get update -y "Updating package lists..."; then
-        status_ok "Package lists updated"
-    else
-        status_fail "Failed to update packages"
-        echo -e "${GRAY}See log: $LOG_FILE${RESET}"
+    # --------------------------------------------------------
+    # Check existing installation
+    # --------------------------------------------------------
+
+    if command -v pufferpanel >/dev/null 2>&1; then
+
+        warning "Panel is already installed."
+        echo
+
+        if systemctl is-active --quiet pufferpanel; then
+            ok "Panel service is already running."
+        else
+            info "Panel is installed but currently stopped."
+        fi
+
         pause_screen
         return
     fi
 
-    # Step 2
-    if run_silent apt-get install -y sudo curl ca-certificates "Installing required packages..."; then
-        status_ok "Required packages installed"
+    # --------------------------------------------------------
+    # Prepare package manager
+    # --------------------------------------------------------
+
+    info "Preparing system..."
+    fix_dpkg
+
+    # --------------------------------------------------------
+    # Update packages
+    # --------------------------------------------------------
+
+    if update_packages; then
+        ok "Package lists updated"
     else
-        status_fail "Failed to install required packages"
+        fail "Unable to update package lists"
+
+        echo
+        echo -e "${YELLOW}Possible causes:${RESET}"
+        echo "• Another apt process is running"
+        echo "• Repository/network problem"
+        echo "• Broken dpkg state"
+        echo
+        echo -e "${GRAY}Log: ${LOG_FILE}${RESET}"
+
         pause_screen
         return
     fi
 
-    # Step 3
-    if run_silent bash -c \
-        'curl -fsSL "https://packagecloud.io/install/repositories/pufferpanel/pufferpanel/script.deb.sh?any=true" | bash' \
-        "Connecting to PufferPanel repository..."; then
+    # --------------------------------------------------------
+    # Install dependencies
+    # --------------------------------------------------------
 
-        status_ok "PufferPanel repository added"
+    if run_quiet \
+        "Installing required packages..." \
+        apt-get install -y \
+        curl \
+        ca-certificates \
+        sudo
+    then
+        :
     else
-        status_fail "Repository setup failed"
-        echo -e "${GRAY}See log: $LOG_FILE${RESET}"
         pause_screen
         return
     fi
 
-    # Step 4
-    if run_silent apt-get update -y "Refreshing PufferPanel packages..."; then
-        status_ok "Repository refreshed"
+    # --------------------------------------------------------
+    # Add repository
+    # --------------------------------------------------------
+
+    echo
+    if run_quiet \
+        "Connecting to panel repository..." \
+        bash -c \
+        'curl -fsSL "https://packagecloud.io/install/repositories/pufferpanel/pufferpanel/script.deb.sh?any=true" | bash'
+    then
+        :
     else
-        status_fail "Repository refresh failed"
         pause_screen
         return
     fi
 
-    # Step 5
-    if run_silent apt-get install -y pufferpanel "Installing PufferPanel..."; then
-        status_ok "PufferPanel installed"
+    # --------------------------------------------------------
+    # Refresh repository
+    # --------------------------------------------------------
+
+    if update_packages; then
+        ok "Repository information updated"
     else
-        status_fail "PufferPanel installation failed"
-        echo -e "${GRAY}See log: $LOG_FILE${RESET}"
+        fail "Repository refresh failed"
+        pause_screen
+        return
+    fi
+
+    # --------------------------------------------------------
+    # Install
+    # --------------------------------------------------------
+
+    if run_quiet \
+        "Installing panel..." \
+        apt-get install -y pufferpanel
+    then
+        :
+    else
         pause_screen
         return
     fi
@@ -179,90 +345,98 @@ install_pufferpanel() {
     echo
     line
     echo
-    echo -e "${GREEN}${BOLD}✔ PufferPanel installation completed${RESET}"
+
+    echo -e "${GREEN}${BOLD}✔ Panel installation completed${RESET}"
     echo
 
-    # Admin user
-    echo -e "${YELLOW}${BOLD}Admin Setup${RESET}"
+    # --------------------------------------------------------
+    # Admin User
+    # --------------------------------------------------------
+
+    echo -e "${CYAN}${BOLD}Admin Account Setup${RESET}"
     echo
-    echo -e "${WHITE}Create your PufferPanel admin account.${RESET}"
+    echo -e "${GRAY}Create your administrator account below.${RESET}"
     echo
 
-    # This command is intentionally hidden.
+    # Command hidden; interactive input remains visible.
     if pufferpanel user add; then
-        status_ok "Admin user created"
+        echo
+        ok "Admin account created"
     else
-        status_fail "Admin user creation failed"
+        echo
+        fail "Admin account creation failed"
     fi
 
     echo
-    echo -e "${CYAN}Starting PufferPanel service...${RESET}"
+
+    # --------------------------------------------------------
+    # Start service
+    # --------------------------------------------------------
 
     if systemctl enable --now pufferpanel >/dev/null 2>&1; then
-        status_ok "PufferPanel service started"
+        ok "Panel service started"
     else
-        status_fail "Could not start PufferPanel service"
+        fail "Panel service could not be started"
     fi
 
     echo
-    echo -e "${GREEN}${BOLD}PufferPanel is ready!${RESET}"
+    line
     echo
-    echo -e "${GRAY}Panel service: ${WHITE}pufferpanel${RESET}"
-    echo -e "${GRAY}The installation commands were hidden from the screen.${RESET}"
+
+    echo -e "${GREEN}${BOLD}👑 KING PANEL IS READY${RESET}"
+    echo
+    echo -e "${GRAY}Panel service has been enabled and started.${RESET}"
 
     pause_screen
 }
 
 # ============================================================
-#                       START
+#                         START
 # ============================================================
 
-start_pufferpanel() {
+start_panel() {
 
     banner
 
-    echo -e "${CYAN}${BOLD}Starting PufferPanel${RESET}"
+    echo -e "${CYAN}${BOLD}Starting Panel${RESET}"
     echo
 
     if ! command -v pufferpanel >/dev/null 2>&1; then
-        status_fail "PufferPanel is not installed."
+        fail "Panel is not installed."
         pause_screen
         return
     fi
 
     if systemctl enable --now pufferpanel >/dev/null 2>&1; then
-        status_ok "PufferPanel started successfully"
+        ok "Panel started successfully"
     else
-        status_fail "Failed to start PufferPanel"
-        echo
-        echo -e "${GRAY}Check service logs with:${RESET}"
-        echo -e "${WHITE}journalctl -u pufferpanel${RESET}"
+        fail "Failed to start panel"
     fi
 
     pause_screen
 }
 
 # ============================================================
-#                       RESTART
+#                        RESTART
 # ============================================================
 
-restart_pufferpanel() {
+restart_panel() {
 
     banner
 
-    echo -e "${YELLOW}${BOLD}Restarting PufferPanel${RESET}"
+    echo -e "${YELLOW}${BOLD}Restarting Panel${RESET}"
     echo
 
     if ! command -v pufferpanel >/dev/null 2>&1; then
-        status_fail "PufferPanel is not installed."
+        fail "Panel is not installed."
         pause_screen
         return
     fi
 
     if systemctl restart pufferpanel >/dev/null 2>&1; then
-        status_ok "PufferPanel restarted successfully"
+        ok "Panel restarted successfully"
     else
-        status_fail "Failed to restart PufferPanel"
+        fail "Failed to restart panel"
     fi
 
     pause_screen
@@ -272,121 +446,151 @@ restart_pufferpanel() {
 #                       UNINSTALL
 # ============================================================
 
-uninstall_pufferpanel() {
+uninstall_panel() {
 
     banner
 
-    echo -e "${RED}${BOLD}Uninstall PufferPanel${RESET}"
-    echo
-    echo -e "${YELLOW}WARNING:${RESET}"
-    echo "This will remove PufferPanel, its service, configuration"
-    echo "and local PufferPanel data."
+    echo -e "${RED}${BOLD}Complete Panel Uninstall${RESET}"
     echo
 
-    read -rp "Type YES to continue: " confirm
+    if ! command -v pufferpanel >/dev/null 2>&1 &&
+       [[ ! -d /etc/pufferpanel ]] &&
+       [[ ! -d /var/lib/pufferpanel ]]
+    then
+        info "Panel is not installed."
+        pause_screen
+        return
+    fi
+
+    echo -e "${YELLOW}WARNING:${RESET}"
+    echo
+    echo "This will remove:"
+    echo "• Panel package"
+    echo "• Panel service"
+    echo "• Panel configuration"
+    echo "• Panel local data"
+    echo "• Panel logs"
+    echo "• Panel repository"
+    echo
+
+    read -rp "Type YES to completely uninstall: " confirm
 
     if [[ "$confirm" != "YES" ]]; then
         echo
-        status_info "Uninstall cancelled."
+        info "Uninstall cancelled."
         pause_screen
         return
     fi
 
     echo
-    rm -f "$LOG_FILE"
 
-    # Stop service
+    # Stop
     if systemctl stop pufferpanel >/dev/null 2>&1; then
-        status_ok "PufferPanel service stopped"
+        ok "Panel stopped"
     else
-        status_info "PufferPanel service was not running"
+        info "Panel was not running"
     fi
 
-    # Disable service
+    # Disable
     systemctl disable pufferpanel >/dev/null 2>&1 || true
-    status_ok "PufferPanel service disabled"
+    ok "Panel service disabled"
 
     # Remove package
     if apt-get purge -y pufferpanel >/dev/null 2>&1; then
-        status_ok "PufferPanel package removed"
+        ok "Panel package removed"
     else
-        status_info "PufferPanel package was already removed"
+        info "Panel package already removed"
     fi
 
-    # Remove package repository
+    # Remove repository
     rm -f /etc/apt/sources.list.d/pufferpanel.list
     rm -f /etc/apt/sources.list.d/pufferpanel*.list
-    status_ok "PufferPanel repository removed"
 
-    # Remove configuration
+    ok "Panel repository removed"
+
+    # Remove config
     rm -rf /etc/pufferpanel
-    status_ok "Configuration removed"
+    ok "Panel configuration removed"
 
-    # Remove local data
+    # Remove data
     rm -rf /var/lib/pufferpanel
-    status_ok "PufferPanel data removed"
+    ok "Panel data removed"
 
     # Remove logs
     rm -rf /var/log/pufferpanel
-    status_ok "PufferPanel logs removed"
+    ok "Panel logs removed"
+
+    # Remove systemd leftovers
+    rm -f /etc/systemd/system/pufferpanel.service
+    systemctl daemon-reload >/dev/null 2>&1 || true
+
+    ok "System service cleaned"
 
     # Refresh apt
-    apt-get update -y >/dev/null 2>&1 || true
+    apt-get update >/dev/null 2>&1 || true
 
     echo
     line
     echo
-    echo -e "${GREEN}${BOLD}✔ PufferPanel completely uninstalled${RESET}"
+
+    echo -e "${GREEN}${BOLD}✔ KING PANEL COMPLETELY UNINSTALLED${RESET}"
     echo
 
     pause_screen
 }
 
 # ============================================================
-#                    PUFFERPANEL MENU
+#                    PANEL SUB MENU
 # ============================================================
 
-puffer_menu() {
+panel_menu() {
 
     while true; do
 
         banner
 
-        echo -e "${WHITE}${BOLD}PufferPanel${RESET}"
+        echo -e "${WHITE}${BOLD}KING PANEL${RESET}"
         echo
+
         echo -e "${GREEN}1.${RESET} Install"
         echo -e "${CYAN}2.${RESET} Start"
         echo -e "${YELLOW}3.${RESET} Restart"
         echo -e "${RED}4.${RESET} Uninstall"
         echo -e "${GRAY}5.${RESET} Back"
-        echo
 
+        echo
         line
         echo
 
         read -rp "Select option: " choice
 
         case "$choice" in
+
             1)
-                install_pufferpanel
+                install_panel
                 ;;
+
             2)
-                start_pufferpanel
+                start_panel
                 ;;
+
             3)
-                restart_pufferpanel
+                restart_panel
                 ;;
+
             4)
-                uninstall_pufferpanel
+                uninstall_panel
                 ;;
+
             5)
                 return
                 ;;
+
             *)
-                echo
-                status_fail "Invalid option"
+                fail "Invalid option"
                 sleep 1
                 ;;
+
         esac
 
     done
@@ -404,32 +608,36 @@ main_menu() {
 
         echo -e "${WHITE}${BOLD}Select Panel${RESET}"
         echo
-        echo -e "${PURPLE}1.${RESET} PufferPanel"
-        echo -e "${RED}2.${RESET} Exit"
-        echo
 
+        echo -e "${PURPLE}1.${RESET} King Panel"
+        echo -e "${RED}2.${RESET} Exit"
+
+        echo
         line
         echo
 
         read -rp "Select option: " choice
 
         case "$choice" in
+
             1)
-                puffer_menu
+                panel_menu
                 ;;
+
             2)
                 clear
                 echo
-                echo -e "${PURPLE}${BOLD}👑 KINGCLOUD${RESET}"
+                echo -e "${PURPLE}${BOLD}👑 KING${RESET}"
                 echo -e "${GRAY}Panel Manager closed.${RESET}"
                 echo
                 exit 0
                 ;;
+
             *)
-                echo
-                status_fail "Invalid option"
+                fail "Invalid option"
                 sleep 1
                 ;;
+
         esac
 
     done
