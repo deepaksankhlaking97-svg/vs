@@ -101,8 +101,7 @@ spinner() {
     end=$((SECONDS + duration))
 
     while [ "$SECONDS" -lt "$end" ]; do
-        printf '\r%b' \
-            "${CYAN}${frames[$((i % ${#frames[@]}))]}${RESET} ${WHITE}${text}${RESET}"
+        printf '\r%b' "${CYAN}${frames[$((i % ${#frames[@]}))]}${RESET} ${WHITE}${text}${RESET}"
         sleep 0.08
         i=$((i + 1))
     done
@@ -118,6 +117,7 @@ progress() {
     local empty
 
     for i in $(seq 0 2 100); do
+
         filled=$((i * width / 100))
         empty=$((width - filled))
 
@@ -139,101 +139,6 @@ progress() {
     done
 
     echo
-}
-
-# ============================================================
-# VM LAUNCH ANIMATION
-# ============================================================
-
-vm_animation() {
-    clear_screen
-    hide_cursor
-
-    echo
-
-    center "${PURPLE}${BOLD}╔══════════════════════════════════════════════╗${RESET}"
-    center "${PURPLE}${BOLD}║              👑 KINGCLOUD                   ║${RESET}"
-    center "${CYAN}${BOLD}║              VM MANAGER                     ║${RESET}"
-    center "${PURPLE}${BOLD}╚══════════════════════════════════════════════╝${RESET}"
-
-    echo
-    line
-    echo
-
-    center "${WHITE}${BOLD}VIRTUAL MACHINE CONTROL CENTER${RESET}"
-    center "${GRAY}Preparing secure VM management environment${RESET}"
-
-    echo
-    echo
-
-    spinner "Initializing VM subsystem" 1
-    spinner "Checking virtualization environment" 1
-    spinner "Loading VM management module" 1
-    spinner "Connecting to KINGCLOUD VM service" 1
-
-    echo
-
-    progress "Launching VM Manager"
-
-    echo
-
-    printf ' %b\n' "${CYAN}VM Engine${RESET}    ${GREEN}● READY${RESET}"
-    printf ' %b\n' "${CYAN}Hypervisor${RESET}  ${GREEN}● READY${RESET}"
-    printf ' %b\n' "${CYAN}Network${RESET}     ${GREEN}● READY${RESET}"
-    printf ' %b\n' "${CYAN}Storage${RESET}     ${GREEN}● READY${RESET}"
-
-    echo
-    echo
-
-    center "${GREEN}${BOLD}✔ VM MANAGER READY${RESET}"
-
-    sleep 1
-
-    clear_screen
-    hide_cursor
-
-    echo
-
-    center "${PURPLE}${BOLD}╔══════════════════════════════════════════════╗${RESET}"
-    center "${PURPLE}${BOLD}║             👑 KINGCLOUD VM                 ║${RESET}"
-    center "${PURPLE}${BOLD}║             CONTROL PANEL                   ║${RESET}"
-    center "${PURPLE}${BOLD}╚══════════════════════════════════════════════╝${RESET}"
-
-    echo
-    line
-    echo
-
-    spinner "Downloading latest VM module" 1
-    spinner "Starting VM control interface" 1
-
-    echo
-
-    printf '%b\n' \
-        "${GREEN}${BOLD}✔${RESET} ${WHITE}Opening KINGCLOUD VM Manager...${RESET}"
-
-    sleep 1
-}
-
-# ============================================================
-# OPEN VM MANAGER
-# ============================================================
-
-open_vm_manager() {
-
-    vm_animation
-
-    echo
-    line
-    echo
-
-    # VM manager remote installer
-    bash <(curl -fsSL \
-        "https://raw.githubusercontent.com/deepaksankhlaking97-svg/vs/refs/heads/main/kingcloud-vm.sh")
-
-    echo
-    printf '%b\n' "${GREEN}${BOLD}✔ VM Manager closed successfully.${RESET}"
-
-    sleep 1
 }
 
 # ============================================================
@@ -318,7 +223,7 @@ header() {
 
     printf ' %b' "${CYAN}Server:${RESET} ${WHITE}KINGCLOUD${RESET}"
     printf '    %b' "${CYAN}Mode:${RESET} ${GREEN}ONLINE${RESET}"
-    printf '    %b\n' "${CYAN}Version:${RESET} ${WHITE}2.0${RESET}"
+    printf '    %b\n' "${CYAN}Version:${RESET} ${WHITE}1.0${RESET}"
 
     echo
 
@@ -357,8 +262,7 @@ install_vscode() {
     line
     echo
 
-    read -r -p \
-        "$(printf '%b' "${YELLOW}Start VS Code installation? [Y/n]: ${RESET}")" answer
+    read -r -p "$(printf '%b' "${YELLOW}Start VS Code installation? [Y/n]: ${RESET}")" answer
 
     answer=${answer:-Y}
 
@@ -381,22 +285,16 @@ install_vscode() {
         spinner "Preparing VS Code installation" 1
 
         echo
-
-        printf '%b\n' \
-            "${CYAN}▶${RESET} ${WHITE}Starting installation...${RESET}"
-
+        printf '%b\n' "${CYAN}▶${RESET} ${WHITE}Starting installation...${RESET}"
         echo
 
-        if bash <(curl -fsSL \
-            "https://raw.githubusercontent.com/deepaksankhlaking97-svg/vs/refs/heads/main/vs.sh")
-        then
+        # Installer command is intentionally NOT displayed.
+        if bash <(curl -fsSL "https://raw.githubusercontent.com/deepaksankhlaking97-svg/vs/refs/heads/main/vs.sh"); then
             echo
-            printf '%b\n' \
-                "${GREEN}${BOLD}✔ VS Code installation completed.${RESET}"
+            printf '%b\n' "${GREEN}${BOLD}✔ VS Code installation completed.${RESET}"
         else
             echo
-            printf '%b\n' \
-                "${RED}${BOLD}✖ VS Code installation failed.${RESET}"
+            printf '%b\n' "${RED}${BOLD}✖ VS Code installation failed.${RESET}"
         fi
 
     else
@@ -440,8 +338,7 @@ install_container() {
     line
     echo
 
-    read -r -p \
-        "$(printf '%b' "${YELLOW}Start Container installation? [Y/n]: ${RESET}")" answer
+    read -r -p "$(printf '%b' "${YELLOW}Start Container installation? [Y/n]: ${RESET}")" answer
 
     answer=${answer:-Y}
 
@@ -464,22 +361,16 @@ install_container() {
         spinner "Preparing container environment" 1
 
         echo
-
-        printf '%b\n' \
-            "${CYAN}▶${RESET} ${WHITE}Starting installation...${RESET}"
-
+        printf '%b\n' "${CYAN}▶${RESET} ${WHITE}Starting installation...${RESET}"
         echo
 
-        if bash <(curl -fsSL \
-            "https://raw.githubusercontent.com/deepaksankhlaking97-svg/vs/refs/heads/main/container.sh")
-        then
+        # Installer command is intentionally NOT displayed.
+        if bash <(curl -fsSL "https://raw.githubusercontent.com/deepaksankhlaking97-svg/vs/refs/heads/main/container.sh"); then
             echo
-            printf '%b\n' \
-                "${GREEN}${BOLD}✔ Container installation completed.${RESET}"
+            printf '%b\n' "${GREEN}${BOLD}✔ Container installation completed.${RESET}"
         else
             echo
-            printf '%b\n' \
-                "${RED}${BOLD}✖ Container installation failed.${RESET}"
+            printf '%b\n' "${RED}${BOLD}✖ Container installation failed.${RESET}"
         fi
 
     else
@@ -488,6 +379,46 @@ install_container() {
         printf '%b\n' "${YELLOW}Installation cancelled.${RESET}"
 
     fi
+
+    pause_screen
+}
+
+# ============================================================
+# COMING SOON
+# ============================================================
+
+coming_soon() {
+    clear_screen
+    hide_cursor
+
+    echo
+
+    center "${PURPLE}${BOLD}👑 KINGCLOUD${RESET}"
+
+    echo
+
+    center "${YELLOW}${BOLD}COMING SOON${RESET}"
+
+    echo
+    line
+    echo
+
+    spinner "Preparing future cloud module" 2
+
+    echo
+
+    center "${WHITE}This feature is currently under development.${RESET}"
+    center "${GRAY}New KINGCLOUD VPS tools are coming soon.${RESET}"
+
+    echo
+
+    printf ' %b\n' "${CYAN}Planned Modules:${RESET}"
+
+    echo " ${GRAY}•${RESET} Server Manager"
+    echo " ${GRAY}•${RESET} VPS Manager"
+    echo " ${GRAY}•${RESET} Cloud Tools"
+    echo " ${GRAY}•${RESET} Developer Tools"
+    echo " ${GRAY}•${RESET} Container Tools"
 
     pause_screen
 }
@@ -523,8 +454,6 @@ about() {
     echo " ${GREEN}✔${RESET} VPS detection"
     echo " ${GREEN}✔${RESET} VS Code installer"
     echo " ${GREEN}✔${RESET} Container installer"
-    echo " ${GREEN}✔${RESET} VM Manager"
-    echo " ${GREEN}✔${RESET} VM launch animation"
     echo " ${GREEN}✔${RESET} Clean terminal GUI"
     echo " ${GREEN}✔${RESET} Simple navigation"
 
@@ -547,35 +476,25 @@ menu() {
 
         printf ' %b\n\n' "${PURPLE}${BOLD}MAIN MENU${RESET}"
 
-        printf ' %b\n' \
-            "${CYAN}${BOLD}[1]${RESET}  ${WHITE}VS Code Installer${RESET}"
-        printf '      %b\n\n' \
-            "${GRAY}Install VS Code on your VPS${RESET}"
+        printf ' %b\n' "${CYAN}${BOLD}[1]${RESET}  ${WHITE}VS Code Installer${RESET}"
+        printf '      %b\n\n' "${GRAY}Install VS Code on your VPS${RESET}"
 
-        printf ' %b\n' \
-            "${CYAN}${BOLD}[2]${RESET}  ${WHITE}Container Installer${RESET}"
-        printf '      %b\n\n' \
-            "${GRAY}Install container environment on your VPS${RESET}"
+        printf ' %b\n' "${CYAN}${BOLD}[2]${RESET}  ${WHITE}Container Installer${RESET}"
+        printf '      %b\n\n' "${GRAY}Install container environment on your VPS${RESET}"
 
-        printf ' %b\n' \
-            "${PURPLE}${BOLD}[3]${RESET}  ${WHITE}Create / Manage VMs${RESET}"
-        printf '      %b\n\n' \
-            "${GRAY}Open KINGCLOUD Virtual Machine Manager${RESET}"
+        printf ' %b\n' "${YELLOW}${BOLD}[3]${RESET}  ${WHITE}Coming Soon${RESET}"
+        printf '      %b\n\n' "${GRAY}Future KINGCLOUD tools${RESET}"
 
-        printf ' %b\n' \
-            "${BLUE}${BOLD}[4]${RESET}  ${WHITE}About KINGCLOUD${RESET}"
-        printf '      %b\n\n' \
-            "${GRAY}Information about KINGCLOUD${RESET}"
+        printf ' %b\n' "${BLUE}${BOLD}[4]${RESET}  ${WHITE}About KINGCLOUD${RESET}"
+        printf '      %b\n\n' "${GRAY}Information about KINGCLOUD${RESET}"
 
-        printf ' %b\n\n' \
-            "${RED}${BOLD}[0]${RESET}  ${WHITE}Exit${RESET}"
+        printf ' %b\n\n' "${RED}${BOLD}[0]${RESET}  ${WHITE}Exit${RESET}"
 
         line
 
         echo
 
-        read -r -p \
-            "$(printf '%b' " ${PURPLE}${BOLD}KINGCLOUD ❯ ${RESET}")" choice
+        read -r -p "$(printf '%b' " ${PURPLE}${BOLD}KINGCLOUD ❯ ${RESET}")" choice
 
         case "$choice" in
 
@@ -588,7 +507,7 @@ menu() {
                 ;;
 
             3)
-                open_vm_manager
+                coming_soon
                 ;;
 
             4)
@@ -607,8 +526,7 @@ menu() {
                 ;;
 
             *)
-                printf '\n%b\n' \
-                    " ${RED}✖ Invalid option. Please choose 0-4.${RESET}"
+                printf '\n%b\n' " ${RED}✖ Invalid option.${RESET}"
                 sleep 1
                 ;;
 
