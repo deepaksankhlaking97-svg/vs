@@ -1,1519 +1,348 @@
 #!/usr/bin/env bash
-# ==========================================================
-#              KINGCLOUD WINDOWS CLOUD PC
-#                     WIN10.SH
-# ==========================================================
+# =====================================================================
+#  KINGCLOUD — Cloud-PC / Code-Server Control Center
+#  Docker • Multi Server • Windows Cloud-PC Management
+# =====================================================================
 
-# Do not use set -e here.
-# Some VPS/container environments do not have systemd.
-set -u
-set -o pipefail
+set -uo pipefail
 
-# ==========================================================
-# COLORS
-# ==========================================================
+# ---------- colors ----------
+PURPLE='\033[38;5;141m'
+CYAN='\033[38;5;51m'
+GREEN='\033[38;5;46m'
+YELLOW='\033[38;5;220m'
+RED='\033[38;5;203m'
+GRAY='\033[38;5;245m'
+BOLD='\033[1m'
+NC='\033[0m'
 
-R='\033[1;31m'
-G='\033[1;32m'
-Y='\033[1;33m'
-B='\033[1;34m'
-C='\033[1;36m'
-P='\033[1;35m'
-W='\033[1;37m'
-D='\033[0;90m'
-N='\033[0m'
+# ---------- paths / config ----------
+KC_HOME="$HOME/.kingcloud"
+KC_LOGS="$KC_HOME/logs"
+KC_PORTS="$KC_HOME/ports.txt"
+LABEL="kingcloud=true"
+DEFAULT_IMAGE="sankhlaking97/win10-ultra-lite"
 
-APP="KINGCLOUD"
-IMAGE="sankhlaking97/win10-ultra-lite"
+mkdir -p "$KC_LOGS"
+touch "$KC_PORTS"
 
-BASE_DIR="/opt/kingcloud-cloudpc"
-INFO_DIR="$BASE_DIR/info"
-LOG_DIR="$BASE_DIR/logs"
-LOCK_DIR="$BASE_DIR/locks"
-
-# ==========================================================
-# ROOT AUTO-FIX
-# ==========================================================
-
-if [ "$(id -u)" -ne 0 ]; then
-
-    echo
-    echo -e "${Y}KINGCLOUD needs administrator/root permission.${N}"
-    echo
-
-    if command -v sudo >/dev/null 2>&1; then
-        echo -e "${C}Requesting sudo permission...${N}"
-        exec sudo -E bash "$0" "$@"
-    else
-        echo -e "${R}sudo is not installed.${N}"
-        echo
-        echo "Run:"
-        echo "  su -"
-        echo "  bash $0"
-        exit 1
-    fi
-
-fi
-
-# ==========================================================
-# DIRECTORIES
-# ==========================================================
-
-mkdir -p "$INFO_DIR" "$LOG_DIR" "$LOCK_DIR"
-
-chmod 700 "$BASE_DIR" 2>/dev/null || true
-
-# ==========================================================
-# FUNCTIONS
-# ==========================================================
-
-clear_screen() {
-    clear 2>/dev/null || true
+# ---------- helpers ----------
+need_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo -e "${RED}Docker nahi mila! Pehle Docker install karo.${NC}"
+    exit 1
+  fi
 }
 
-line() {
-    echo -e "${D}────────────────────────────────────────────────────────────${N}"
-}
-
-pause_short() {
-    sleep 1
-}
+pause() { read -rp "$(echo -e "${GRAY}Enter dabao jari rakhne ke liye...${NC}")"; }
 
 sanitize_name() {
-
-    local name="$1"
-
-    name=$(echo "$name" \
-        | tr '[:upper:]' '[:lower:]' \
-        | sed 's/[^a-z0-9_-]/-/g' \
-        | sed 's/--*/-/g' \
-        | sed 's/^-//;s/-$//')
-
-    echo "$name"
+  echo "$1" | tr -cd 'a-zA-Z0-9_.-' | tr 'A-Z' 'a-z'
 }
 
-# ==========================================================
-# DOCKER INSTALL / CHECK
-# ==========================================================
-
-install_docker() {
-
-    echo
-    echo -e "${C}Installing Docker...${N}"
-    echo
-
-    if command -v apt-get >/dev/null 2>&1; then
-
-        export DEBIAN_FRONTEND=noninteractive
-
-        apt-get update -y || true
-
-        apt-get install -y docker.io || {
-            echo -e "${R}Docker installation failed.${N}"
-            return 1
-        }
-
-    elif command -v dnf >/dev/null 2>&1; then
-
-        dnf install -y docker || {
-            echo -e "${R}Docker installation failed.${N}"
-            return 1
-        }
-
-    elif command -v yum >/dev/null 2>&1; then
-
-        yum install -y docker || {
-            echo -e "${R}Docker installation failed.${N}"
-            return 1
-        }
-
-    elif command -v apk >/dev/null 2>&1; then
-
-        apk add docker || {
-            echo -e "${R}Docker installation failed.${N}"
-            return 1
-        }
-
-    else
-
-        echo -e "${R}Could not detect supported package manager.${N}"
-        return 1
-
-    fi
-
-    # systemd may not exist, so NEVER depend on it
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl enable docker >/dev/null 2>&1 || true
-        systemctl start docker >/dev/null 2>&1 || true
-    fi
-
-    # Try service command if available
-    if command -v service >/dev/null 2>&1; then
-        service docker start >/dev/null 2>&1 || true
-    fi
-
-    return 0
+port_free() {
+  local p="$1"
+  ! ss -tuln 2>/dev/null | grep -q ":$p " && ! docker ps -a --format '{{.Ports}}' | grep -q ":$p->"
 }
 
-check_docker() {
-
-    # ------------------------------------------------------
-    # Docker binary
-    # ------------------------------------------------------
-
-    if ! command -v docker >/dev/null 2>&1; then
-
-        echo -e "${Y}Docker not found.${N}"
-
-        install_docker || return 1
-
-    fi
-
-    # ------------------------------------------------------
-    # Docker daemon
-    # ------------------------------------------------------
-
-    if docker info >/dev/null 2>&1; then
-        return 0
-    fi
-
-    echo
-    echo -e "${Y}Docker daemon is not responding.${N}"
-
-    # Try systemd
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl start docker >/dev/null 2>&1 || true
-    fi
-
-    # Try service
-    if command -v service >/dev/null 2>&1; then
-        service docker start >/dev/null 2>&1 || true
-    fi
-
-    sleep 2
-
-    if docker info >/dev/null 2>&1; then
-        echo -e "${G}✓ Docker is ready.${N}"
-        return 0
-    fi
-
-    echo
-    echo -e "${R}✗ Docker daemon is not available.${N}"
-    echo
-    echo -e "${Y}Run this to check:${N}"
-    echo "  docker info"
-    echo
-
-    return 1
+next_free_port() {
+  local start="$1"
+  local p="$start"
+  while ! port_free "$p"; do
+    p=$((p + 1))
+  done
+  echo "$p"
 }
 
-# ==========================================================
-# KVM CHECK
-# ==========================================================
-
-check_kvm() {
-
-    if [ -e /dev/kvm ]; then
-        return 0
-    fi
-
-    echo
-    echo -e "${Y}⚠ /dev/kvm was not detected.${N}"
-    echo
-    echo -e "${D}The selected Windows Docker image requires KVM for"
-    echo -e "hardware virtualization.${N}"
-    echo
-
-    read -rp "Continue anyway? [y/N]: " answer
-
-    if [[ "$answer" =~ ^[Yy]$ ]]; then
-        return 0
-    fi
-
-    return 1
+count_status() {
+  RUNNING=$(docker ps --filter "label=$LABEL" --format '{{.ID}}' | wc -l | tr -d ' ')
+  TOTAL=$(docker ps -a --filter "label=$LABEL" --format '{{.ID}}' | wc -l | tr -d ' ')
+  SUSPENDED=$(docker ps -a --filter "label=$LABEL" --filter "status=paused" --format '{{.ID}}' | wc -l | tr -d ' ')
 }
 
-# ==========================================================
-# PORT FUNCTIONS
-# ==========================================================
-
-is_port_free() {
-
-    local port="$1"
-
-    # Host check
-    if command -v ss >/dev/null 2>&1; then
-
-        if ss -lnt 2>/dev/null |
-            awk '{print $4}' |
-            grep -qE "[:.]${port}$"; then
-
-            return 1
-        fi
-
-    fi
-
-    # Docker published port check
-    if docker ps --format '{{.Ports}}' 2>/dev/null |
-        grep -qE "[:.]${port}->"; then
-
-        return 1
-    fi
-
-    return 0
-}
-
-find_free_port() {
-
-    local port="$1"
-
-    while [ "$port" -le 65500 ]; do
-
-        if is_port_free "$port"; then
-            echo "$port"
-            return 0
-        fi
-
-        port=$((port + 1))
-
-    done
-
-    return 1
-}
-
-valid_port() {
-
-    [[ "$1" =~ ^[0-9]+$ ]] &&
-    [ "$1" -ge 1 ] &&
-    [ "$1" -le 65535 ]
-}
-
-valid_number() {
-
-    [[ "$1" =~ ^[0-9]+$ ]] &&
-    [ "$1" -gt 0 ]
-}
-
-# ==========================================================
-# SERVER STATUS
-# ==========================================================
-
-server_status() {
-
-    local cname="$1"
-
-    # Installation background process
-    if [ -f "$LOCK_DIR/$cname.installing" ]; then
-
-        local pid
-        pid=$(cat "$LOCK_DIR/$cname.installing" 2>/dev/null || true)
-
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            echo "INSTALLING"
-            return
-        fi
-
-        rm -f "$LOCK_DIR/$cname.installing"
-    fi
-
-    if ! docker container inspect "$cname" >/dev/null 2>&1; then
-        echo "MISSING"
-        return
-    fi
-
-    local state
-
-    state=$(docker inspect \
-        -f '{{.State.Status}}' \
-        "$cname" 2>/dev/null || echo "unknown")
-
-    case "$state" in
-
-        running)
-            echo "RUNNING"
-            ;;
-
-        exited)
-            echo "STOPPED"
-            ;;
-
-        paused)
-            echo "SUSPENDED"
-            ;;
-
-        restarting)
-            echo "RESTARTING"
-            ;;
-
-        created)
-            echo "CREATED"
-            ;;
-
-        dead)
-            echo "DEAD"
-            ;;
-
-        *)
-            echo "$state"
-            ;;
-
-    esac
-}
-
-# ==========================================================
-# SAVE INFO
-# ==========================================================
-
-save_info() {
-
-    local cname="$1"
-    local display="$2"
-    local username="$3"
-    local ram="$4"
-    local cpu="$5"
-    local disk="$6"
-    local web="$7"
-    local vnc="$8"
-    local rdp="$9"
-
-    cat > "$INFO_DIR/$cname.conf" <<EOF
-SERVER_NAME=$(printf '%q' "$display")
-CONTAINER_NAME=$(printf '%q' "$cname")
-USERNAME=$(printf '%q' "$username")
-RAM=$(printf '%q' "$ram")
-CPU=$(printf '%q' "$cpu")
-DISK=$(printf '%q' "$disk")
-WEB_PORT=$(printf '%q' "$web")
-VNC_PORT=$(printf '%q' "$vnc")
-RDP_PORT=$(printf '%q' "$rdp")
-IMAGE=$(printf '%q' "$IMAGE")
-CREATED=$(printf '%q' "$(date '+%Y-%m-%d %H:%M:%S')")
+banner() {
+  clear
+  echo -e "${PURPLE}${BOLD}"
+  cat <<'EOF'
+  ┌──────────────────────────────────────────────┐
+  │   _  __ ___ _   _  ____                       │
+  │  | |/ /|_ _| \ | |/ ___|                      │
+  │  | ' /  | ||  \| | |  _                       │
+  │  | . \  | || |\  | |_| |                      │
+  │  |_|\_\|___|_| \_|\____|                      │
+  └──────────────────────────────────────────────┘
 EOF
+  echo -e "${NC}"
+  echo -e "        ${CYAN}CODE-SERVER / CLOUD-PC CONTROL CENTER${NC}"
+  echo -e "              ${BOLD}${PURPLE}K I N G C L O U D${NC}"
+  echo
+  echo -e "${GRAY}Docker • Multi Server • Windows Cloud-PC Management${NC}"
+  echo
+  count_status
+  echo -e "${GREEN}●${NC} Running    : ${RUNNING}"
+  echo -e "${PURPLE}●${NC} Total      : ${TOTAL}"
+  echo -e "${YELLOW}●${NC} Suspended  : ${SUSPENDED}"
+  echo
+  echo -e "${GRAY}------------------------------------------------${NC}"
+  echo -e " ${GREEN}[1]${NC} 🚀 Install Cloud-PC / Code-Server"
+  echo -e " ${CYAN}[2]${NC} 📋 List Servers"
+  echo -e " ${CYAN}[3]${NC} 🔄 Restart All"
+  echo -e " ${RED}[4]${NC} ⏹  Stop All"
+  echo -e " ${GREEN}[5]${NC} ▶  Start All"
+  echo -e " ${YELLOW}[6]${NC} ✨ Coming Soon"
+  echo -e " ${RED}[7]${NC} 🗑  Delete Server"
+  echo -e " ${YELLOW}[8]${NC} 🔒 Suspend Server"
+  echo -e " ${YELLOW}[9]${NC} 🔓 Unsuspend Server"
+  echo -e " ${CYAN}[10]${NC} ℹ  About & Features"
+  echo
+  echo -e "${GRAY}------------------------------------------------${NC}"
+  echo -e " ${RED}[0]${NC} 🚪 Exit"
+  echo
 }
 
-# ==========================================================
-# COUNTERS
-# ==========================================================
-
-get_counts() {
-
-    local total=0
-    local running=0
-    local suspended=0
-
-    for file in "$INFO_DIR"/*.conf; do
-
-        [ -e "$file" ] || continue
-
-        unset CONTAINER_NAME
-
-        # shellcheck disable=SC1090
-        source "$file"
-
-        total=$((total + 1))
-
-        status=$(server_status "$CONTAINER_NAME")
-
-        [ "$status" = "RUNNING" ] &&
-            running=$((running + 1))
-
-        [ "$status" = "SUSPENDED" ] &&
-            suspended=$((suspended + 1))
-
-    done
-
-    echo "$running $total $suspended"
+pick_container() {
+  # prints a numbered list, returns chosen container name in $CHOSEN
+  mapfile -t NAMES < <(docker ps -a --filter "label=$LABEL" --format '{{.Names}}')
+  if [ "${#NAMES[@]}" -eq 0 ]; then
+    echo -e "${RED}Koi server nahi mila.${NC}"
+    CHOSEN=""
+    return
+  fi
+  local i=1
+  for n in "${NAMES[@]}"; do
+    echo -e "  ${CYAN}[$i]${NC} $n"
+    i=$((i + 1))
+  done
+  read -rp "Number chuno: " idx
+  if [[ "$idx" =~ ^[0-9]+$ ]] && [ "$idx" -ge 1 ] && [ "$idx" -le "${#NAMES[@]}" ]; then
+    CHOSEN="${NAMES[$((idx - 1))]}"
+  else
+    echo -e "${RED}Galat option.${NC}"
+    CHOSEN=""
+  fi
 }
 
-# ==========================================================
-# BANNER
-# ==========================================================
+# ---------- [1] INSTALL ----------
+install_server() {
+  echo -e "${PURPLE}${BOLD}== Naya Cloud-PC Install ==${NC}"
+  echo
 
-show_banner() {
+  read -rp "Windows / PC ka naam [WinPC]: " win_name
+  win_name=${win_name:-WinPC}
 
-    clear_screen
+  read -rp "Container ka naam [auto]: " cname
+  if [ -z "$cname" ]; then
+    cname="kc-$(sanitize_name "$win_name")-$RANDOM"
+  else
+    cname=$(sanitize_name "$cname")
+  fi
 
-    echo -e "${P}"
-    cat <<'EOF'
-╔══════════════════════════════════════════════════════════╗
-║                                                          ║
-║             ██╗  ██╗ ██████╗                            ║
-║             ██║ ██╔╝██╔════╝                            ║
-║             █████╔╝ ██║  ███╗                           ║
-║             ██╔═██╗ ██║   ██║                           ║
-║             ██║  ██╗╚██████╔╝                           ║
-║             ╚═╝  ╚═╝ ╚═════╝                            ║
-║                                                          ║
-║              CODE-SERVER CONTROL CENTER                 ║
-║                                                          ║
-║                    K I N G C L O U D                     ║
-║                                                          ║
-╚══════════════════════════════════════════════════════════╝
-EOF
-    echo -e "${N}"
+  if docker ps -a --format '{{.Names}}' | grep -qx "$cname"; then
+    echo -e "${RED}Ye naam pehle se hai. Doosra naam try karo.${NC}"
+    pause
+    return
+  fi
 
+  read -rp "Windows/User ka username [admin]: " win_user
+  win_user=${win_user:-admin}
+
+  while true; do
+    read -rsp "Password set karo: " win_pass
     echo
-    echo -e "${D}Docker • Multi Server • Windows Cloud PC Management${N}"
+    read -rsp "Password dobara likho: " win_pass2
     echo
+    if [ "$win_pass" == "$win_pass2" ] && [ -n "$win_pass" ]; then
+      break
+    fi
+    echo -e "${RED}Password match nahi hua ya khaali hai, phir se try karo.${NC}"
+  done
 
-    read running total suspended <<< "$(get_counts)"
+  read -rp "Web/VNC port (default 6080, forward karna hai) [6080]: " web_port
+  web_port=${web_port:-6080}
+  if ! port_free "$web_port"; then
+    new_port=$(next_free_port "$web_port")
+    echo -e "${YELLOW}Port $web_port busy hai, iske jagah $new_port use ho raha hai.${NC}"
+    web_port="$new_port"
+  fi
 
-    echo -e "${G}● Running   : ${W}$running${N}"
-    echo -e "${P}● Total     : ${W}$total${N}"
-    echo -e "${Y}● Suspended : ${W}$suspended${N}"
+  rdp_port=$(next_free_port 3389)
+  vnc_port=$(next_free_port 5900)
 
-    echo
-    line
+  read -rp "RAM kitna dena hai MB me [4096]: " ram
+  ram=${ram:-4096}
+
+  read -rp "CPU kitne core dene hain [2]: " cpu
+  cpu=${cpu:-2}
+
+  read -rp "Disk size [64G]: " disk
+  disk=${disk:-64G}
+
+  read -rp "Docker image [${DEFAULT_IMAGE}]: " image
+  image=${image:-$DEFAULT_IMAGE}
+
+  echo
+  echo -e "${CYAN}---- Summary ----${NC}"
+  echo -e "Naam        : $win_name  (container: $cname)"
+  echo -e "User        : $win_user"
+  echo -e "Web/VNC Port: $web_port"
+  echo -e "RDP Port    : $rdp_port"
+  echo -e "VNC Port    : $vnc_port"
+  echo -e "RAM         : ${ram}MB"
+  echo -e "CPU         : ${cpu} core"
+  echo -e "Disk        : $disk"
+  echo -e "Image       : $image"
+  echo
+  read -rp "Confirm install? (y/n) [y]: " ok
+  ok=${ok:-y}
+  if [[ "$ok" != "y" && "$ok" != "Y" ]]; then
+    echo -e "${YELLOW}Cancel kar diya.${NC}"
+    pause
+    return
+  fi
+
+  logfile="$KC_LOGS/${cname}.log"
+
+  echo -e "${GREEN}Background me install shuru ho raha hai...${NC}"
+
+  (
+    docker run -d \
+      --name "$cname" \
+      --restart unless-stopped \
+      --device /dev/kvm:/dev/kvm \
+      --cap-add NET_ADMIN \
+      --label "$LABEL" \
+      --label "kingcloud.display_name=$win_name" \
+      --label "kingcloud.user=$win_user" \
+      -p "${web_port}:6080" \
+      -p "${vnc_port}:5900" \
+      -p "${rdp_port}:3389" \
+      -e VNC_PASSWORD="$win_pass" \
+      -e USERNAME="$win_user" \
+      -e PASSWORD="$win_pass" \
+      -e RAM="${ram}" \
+      -e CPU="${cpu}" \
+      -e DISK="${disk}" \
+      -v "${cname}_data:/data" \
+      -v "${cname}_iso:/iso" \
+      "$image" >"$logfile" 2>&1
+  ) &
+  bgpid=$!
+
+  spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+  i=0
+  while kill -0 "$bgpid" 2>/dev/null; do
+    i=$(((i + 1) % ${#spin}))
+    printf "\r${CYAN}%s Installing '%s' ...${NC}" "${spin:$i:1}" "$win_name"
+    sleep 0.15
+  done
+  wait "$bgpid"
+  status=$?
+  echo
+
+  if [ "$status" -eq 0 ] && docker ps -a --format '{{.Names}}' | grep -qx "$cname"; then
+    echo -e "${GREEN}'$win_name' ($cname) install ho gaya aur background me chal raha hai!${NC}"
+    echo -e "Access URL   : http://<server-ip>:${web_port}"
+    echo -e "RDP Port     : ${rdp_port}"
+    echo -e "VNC Port     : ${vnc_port}"
+    echo -e "Live logs    : docker logs -f $cname"
+    echo -e "${GRAY}(Windows khud install hote rehna, iske andar time lagega — logs se progress dekho)${NC}"
+  else
+    echo -e "${RED}Install fail ho gaya. Log dekho: $logfile${NC}"
+  fi
+  pause
 }
 
-# ==========================================================
-# INSTALL CLOUD PC
-# ==========================================================
-
-install_cloud_pc() {
-
-    if ! check_docker; then
-        sleep 2
-        return
-    fi
-
-    clear_screen
-
-    echo -e "${P}╔══════════════════════════════════════════════════════════╗${N}"
-    echo -e "${P}║              KINGCLOUD WINDOWS CLOUD PC                ║${N}"
-    echo -e "${P}╚══════════════════════════════════════════════════════════╝${N}"
-    echo
-
-    # ------------------------------------------------------
-    # PC NAME
-    # ------------------------------------------------------
-
-    read -rp "Windows PC Name [KingCloud-PC]: " display_name
-    display_name="${display_name:-KingCloud-PC}"
-
-    cname="$(sanitize_name "$display_name")"
-
-    [ -z "$cname" ] && cname="cloud-pc"
-
-    cname="kingcloud-$cname"
-
-    # ------------------------------------------------------
-    # DUPLICATE
-    # ------------------------------------------------------
-
-    if docker container inspect "$cname" >/dev/null 2>&1 ||
-       [ -f "$LOCK_DIR/$cname.installing" ]; then
-
-        echo
-        echo -e "${R}✗ This Cloud PC already exists.${N}"
-        sleep 2
-        return
-    fi
-
-    # ------------------------------------------------------
-    # USER
-    # ------------------------------------------------------
-
-    echo
-    line
-    echo -e "${C}Windows User Configuration${N}"
-    line
-
-    read -rp "Windows Username [king]: " win_user
-    win_user="${win_user:-king}"
-    win_user="${win_user// /}"
-
-    if [ -z "$win_user" ]; then
-        win_user="king"
-    fi
-
-    read -rsp "Windows Password [admin123]: " win_pass
-    echo
-
-    win_pass="${win_pass:-admin123}"
-
-    # ------------------------------------------------------
-    # RESOURCES
-    # ------------------------------------------------------
-
-    echo
-    line
-    echo -e "${C}Resource Configuration${N}"
-    line
-
-    read -rp "RAM in MB [2048]: " ram
-    ram="${ram:-2048}"
-
-    if ! valid_number "$ram"; then
-        echo -e "${R}✗ Invalid RAM.${N}"
-        sleep 2
-        return
-    fi
-
-    read -rp "CPU cores [1]: " cpu
-    cpu="${cpu:-1}"
-
-    if ! valid_number "$cpu"; then
-        echo -e "${R}✗ Invalid CPU.${N}"
-        sleep 2
-        return
-    fi
-
-    read -rp "Disk size [50G]: " disk
-    disk="${disk:-50G}"
-
-    # ------------------------------------------------------
-    # NETWORK
-    # ------------------------------------------------------
-
-    echo
-    line
-    echo -e "${C}Network Configuration${N}"
-    line
-
-    read -rp "Web/VNC Port [6080]: " web_port
-    web_port="${web_port:-6080}"
-
-    if ! valid_port "$web_port"; then
-        echo -e "${R}✗ Invalid port.${N}"
-        sleep 2
-        return
-    fi
-
-    # ------------------------------------------------------
-    # WEB PORT BUSY
-    # ------------------------------------------------------
-
-    if ! is_port_free "$web_port"; then
-
-        echo
-        echo -e "${Y}⚠ Port $web_port is already in use.${N}"
-
-        new_port="$(find_free_port "$web_port")"
-
-        if [ -z "$new_port" ]; then
-            echo -e "${R}✗ No free port found.${N}"
-            sleep 2
-            return
-        fi
-
-        web_port="$new_port"
-
-        echo -e "${G}✓ Automatically selected: $web_port${N}"
-    fi
-
-    # ------------------------------------------------------
-    # VNC
-    # ------------------------------------------------------
-
-    vnc_port="$(find_free_port 5900)" || {
-        echo -e "${R}✗ VNC port unavailable.${N}"
-        sleep 2
-        return
-    }
-
-    # ------------------------------------------------------
-    # RDP
-    # ------------------------------------------------------
-
-    rdp_port="$(find_free_port 3389)" || {
-        echo -e "${R}✗ RDP port unavailable.${N}"
-        sleep 2
-        return
-    }
-
-    # ------------------------------------------------------
-    # KVM
-    # ------------------------------------------------------
-
-    echo
-
-    if [ -e /dev/kvm ]; then
-        echo -e "${G}✓ KVM detected${N}"
-    else
-        echo -e "${Y}⚠ KVM not detected${N}"
-    fi
-
-    # ------------------------------------------------------
-    # PREVIEW
-    # ------------------------------------------------------
-
-    echo
-    line
-    echo -e "${W}CLOUD PC CONFIGURATION${N}"
-    line
-
-    echo -e "PC Name    : ${C}$display_name${N}"
-    echo -e "Container  : ${C}$cname${N}"
-    echo -e "Username   : ${C}$win_user${N}"
-    echo -e "RAM        : ${C}${ram}MB${N}"
-    echo -e "CPU        : ${C}$cpu${N}"
-    echo -e "Disk       : ${C}$disk${N}"
-    echo -e "Web Port   : ${C}$web_port${N}"
-    echo -e "VNC Port   : ${C}$vnc_port${N}"
-    echo -e "RDP Port   : ${C}$rdp_port${N}"
-    echo -e "Image      : ${C}$IMAGE${N}"
-
-    echo
-    line
-
-    read -rp "Install Cloud PC? [Y/n]: " confirm
-    confirm="${confirm:-Y}"
-
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo -e "${Y}Cancelled.${N}"
-        sleep 1
-        return
-    fi
-
-    # ------------------------------------------------------
-    # SAVE CONFIG
-    # ------------------------------------------------------
-
-    save_info \
-        "$cname" \
-        "$display_name" \
-        "$win_user" \
-        "$ram" \
-        "$cpu" \
-        "$disk" \
-        "$web_port" \
-        "$vnc_port" \
-        "$rdp_port"
-
-    logfile="$LOG_DIR/$cname.log"
-
-    # ------------------------------------------------------
-    # BACKGROUND INSTALL
-    # ------------------------------------------------------
-
-    (
-        echo "=========================================================="
-        echo "KINGCLOUD WINDOWS CLOUD PC"
-        echo "=========================================================="
-        echo "SERVER: $display_name"
-        echo "CONTAINER: $cname"
-        echo "IMAGE: $IMAGE"
-        echo "STARTED: $(date)"
-        echo "=========================================================="
-        echo
-
-        echo "[1/3] Pulling Docker image..."
-
-        if ! docker pull "$IMAGE"; then
-
-            echo
-            echo "ERROR: IMAGE PULL FAILED"
-            echo "IMAGE: $IMAGE"
-            echo "TIME: $(date)"
-
-            rm -f "$LOCK_DIR/$cname.installing"
-
-            exit 1
-        fi
-
-        echo
-        echo "[2/3] Creating persistent volumes..."
-
-        docker volume create "${cname}_data" >/dev/null 2>&1 || true
-        docker volume create "${cname}_iso" >/dev/null 2>&1 || true
-
-        echo
-        echo "[3/3] Starting Cloud PC..."
-
-        if docker run -d \
-            --name "$cname" \
-            --restart unless-stopped \
-            --device /dev/kvm:/dev/kvm \
-            --cap-add NET_ADMIN \
-            -p "${web_port}:6080" \
-            -p "${vnc_port}:5900" \
-            -p "${rdp_port}:3389" \
-            -e VNC_PASSWORD="$win_pass" \
-            -e WINDOWS_USERNAME="$win_user" \
-            -e WINDOWS_PASSWORD="$win_pass" \
-            -e RAM="$ram" \
-            -e CPU="$cpu" \
-            -e DISK="$disk" \
-            -v "${cname}_data:/data" \
-            -v "${cname}_iso:/iso" \
-            "$IMAGE"; then
-
-            echo
-            echo "=========================================================="
-            echo "✓ KINGCLOUD CLOUD PC STARTED"
-            echo "=========================================================="
-            echo "SERVER : $display_name"
-            echo "WEB    : http://YOUR-VPS-IP:$web_port"
-            echo "VNC    : $vnc_port"
-            echo "RDP    : $rdp_port"
-            echo "TIME   : $(date)"
-            echo "=========================================================="
-
-        else
-
-            echo
-            echo "=========================================================="
-            echo "✗ CLOUD PC FAILED"
-            echo "=========================================================="
-            echo
-            echo "Docker command failed."
-            echo "Check the Docker log for details."
-
-        fi
-
-        rm -f "$LOCK_DIR/$cname.installing"
-
-    ) > "$logfile" 2>&1 &
-
-    pid=$!
-
-    echo "$pid" > "$LOCK_DIR/$cname.installing"
-
-    # ------------------------------------------------------
-    # NO ENTER REQUIRED
-    # ------------------------------------------------------
-
-    echo
-    echo -e "${G}✓ $display_name installation started in background.${N}"
-    echo -e "${D}The main menu will return automatically.${N}"
-
-    sleep 1
-}
-
-# ==========================================================
-# LIST
-# ==========================================================
-
+# ---------- [2] LIST ----------
 list_servers() {
-
-    clear_screen
-
-    echo -e "${P}KINGCLOUD • CLOUD PC LIST${N}"
-    line
-    echo
-
-    printf "%-22s %-14s %-8s %-6s %-8s %-8s\n" \
-        "SERVER" "STATUS" "RAM" "CPU" "WEB" "RDP"
-
-    line
-
-    found=0
-
-    for file in "$INFO_DIR"/*.conf; do
-
-        [ -e "$file" ] || continue
-
-        unset SERVER_NAME CONTAINER_NAME RAM CPU WEB_PORT RDP_PORT
-
-        # shellcheck disable=SC1090
-        source "$file"
-
-        found=1
-
-        status="$(server_status "$CONTAINER_NAME")"
-
-        case "$status" in
-
-            RUNNING)
-                s="${G}RUNNING${N}"
-                ;;
-
-            INSTALLING)
-                s="${C}INSTALLING${N}"
-                ;;
-
-            STOPPED)
-                s="${R}STOPPED${N}"
-                ;;
-
-            SUSPENDED)
-                s="${Y}SUSPENDED${N}"
-                ;;
-
-            *)
-                s="${D}$status${N}"
-                ;;
-
-        esac
-
-        printf "%-22s %-23b %-8s %-6s %-8s %-8s\n" \
-            "$SERVER_NAME" \
-            "$s" \
-            "${RAM}M" \
-            "$CPU" \
-            "$WEB_PORT" \
-            "$RDP_PORT"
-
-    done
-
-    if [ "$found" -eq 0 ]; then
-        echo -e "${D}No Cloud PCs found.${N}"
-    fi
-
-    echo
-    line
-
-    sleep 3
+  echo -e "${CYAN}${BOLD}== Servers ==${NC}"
+  printf "%-20s %-10s %-22s %-8s\n" "NAME" "STATUS" "DISPLAY-NAME" "USER"
+  docker ps -a --filter "label=$LABEL" --format '{{.Names}}' | while read -r n; do
+    st=$(docker inspect -f '{{.State.Status}}' "$n")
+    dn=$(docker inspect -f '{{ index .Config.Labels "kingcloud.display_name" }}' "$n")
+    us=$(docker inspect -f '{{ index .Config.Labels "kingcloud.user" }}' "$n")
+    printf "%-20s %-10s %-22s %-8s\n" "$n" "$st" "$dn" "$us"
+  done
+  echo
+  pause
 }
 
-# ==========================================================
-# START ALL
-# ==========================================================
-
-start_all() {
-
-    if ! check_docker; then
-        sleep 2
-        return
-    fi
-
-    clear_screen
-
-    echo -e "${G}KINGCLOUD • START ALL${N}"
-    line
-    echo
-
-    found=0
-
-    for file in "$INFO_DIR"/*.conf; do
-
-        [ -e "$file" ] || continue
-
-        unset SERVER_NAME CONTAINER_NAME
-
-        # shellcheck disable=SC1090
-        source "$file"
-
-        found=1
-
-        status="$(server_status "$CONTAINER_NAME")"
-
-        echo -e "${W}$SERVER_NAME${N}"
-
-        case "$status" in
-
-            RUNNING)
-
-                echo -e "  ${G}✓ Already running${N}"
-                ;;
-
-            INSTALLING)
-
-                echo -e "  ${C}⏳ Installation is running${N}"
-                ;;
-
-            STOPPED|CREATED)
-
-                echo -e "  ${C}▶ Starting...${N}"
-
-                if docker start "$CONTAINER_NAME" >/dev/null 2>&1; then
-                    echo -e "  ${G}✓ Started successfully${N}"
-                else
-                    echo -e "  ${R}✗ Failed to start${N}"
-                fi
-                ;;
-
-            SUSPENDED)
-
-                echo -e "  ${Y}⏸ Suspended${N}"
-                ;;
-
-            RESTARTING)
-
-                echo -e "  ${Y}↻ Restarting${N}"
-                ;;
-
-            MISSING)
-
-                echo -e "  ${R}✗ Container missing${N}"
-                ;;
-
-            *)
-
-                echo -e "  ${Y}Status: $status${N}"
-                ;;
-
-        esac
-
-        echo
-
-    done
-
-    if [ "$found" -eq 0 ]; then
-        echo -e "${D}No Cloud PCs found.${N}"
-    fi
-
-    echo -e "${G}✓ Start operation completed.${N}"
-
-    sleep 2
-}
-
-# ==========================================================
-# STOP ALL
-# ==========================================================
-
-stop_all() {
-
-    if ! check_docker; then
-        sleep 2
-        return
-    fi
-
-    clear_screen
-
-    echo -e "${R}KINGCLOUD • STOP ALL${N}"
-    line
-    echo
-
-    found=0
-
-    for file in "$INFO_DIR"/*.conf; do
-
-        [ -e "$file" ] || continue
-
-        unset SERVER_NAME CONTAINER_NAME
-
-        # shellcheck disable=SC1090
-        source "$file"
-
-        found=1
-
-        status="$(server_status "$CONTAINER_NAME")"
-
-        echo -e "${W}$SERVER_NAME${N}"
-
-        if [ "$status" = "RUNNING" ]; then
-
-            if docker stop "$CONTAINER_NAME" >/dev/null 2>&1; then
-                echo -e "  ${G}✓ Stopped${N}"
-            else
-                echo -e "  ${R}✗ Stop failed${N}"
-            fi
-
-        elif [ "$status" = "INSTALLING" ]; then
-
-            echo -e "  ${C}⏳ Installation running${N}"
-
-        else
-
-            echo -e "  ${D}Status: $status${N}"
-
-        fi
-
-        echo
-
-    done
-
-    [ "$found" -eq 0 ] &&
-        echo -e "${D}No Cloud PCs found.${N}"
-
-    echo -e "${G}✓ Stop operation completed.${N}"
-
-    sleep 2
-}
-
-# ==========================================================
-# RESTART ALL
-# ==========================================================
-
+# ---------- [3][4][5] BULK ----------
 restart_all() {
-
-    if ! check_docker; then
-        sleep 2
-        return
-    fi
-
-    clear_screen
-
-    echo -e "${C}KINGCLOUD • RESTART ALL${N}"
-    line
-    echo
-
-    found=0
-
-    for file in "$INFO_DIR"/*.conf; do
-
-        [ -e "$file" ] || continue
-
-        unset SERVER_NAME CONTAINER_NAME
-
-        # shellcheck disable=SC1090
-        source "$file"
-
-        found=1
-
-        status="$(server_status "$CONTAINER_NAME")"
-
-        echo -e "${W}$SERVER_NAME${N}"
-
-        case "$status" in
-
-            RUNNING|STOPPED|CREATED)
-
-                if docker restart "$CONTAINER_NAME" >/dev/null 2>&1; then
-                    echo -e "  ${G}✓ Restarted${N}"
-                else
-                    echo -e "  ${R}✗ Restart failed${N}"
-                fi
-                ;;
-
-            INSTALLING)
-
-                echo -e "  ${C}⏳ Installation running${N}"
-                ;;
-
-            SUSPENDED)
-
-                echo -e "  ${Y}⏸ Suspended${N}"
-                ;;
-
-            *)
-
-                echo -e "  ${D}Status: $status${N}"
-                ;;
-
-        esac
-
-        echo
-
-    done
-
-    [ "$found" -eq 0 ] &&
-        echo -e "${D}No Cloud PCs found.${N}"
-
-    echo -e "${G}✓ Restart operation completed.${N}"
-
-    sleep 2
+  docker ps -a --filter "label=$LABEL" --format '{{.Names}}' | xargs -r -I{} docker restart {}
+  echo -e "${GREEN}Sab servers restart ho gaye.${NC}"
+  pause
+}
+stop_all() {
+  docker ps --filter "label=$LABEL" --format '{{.Names}}' | xargs -r -I{} docker stop {}
+  echo -e "${RED}Sab servers stop ho gaye.${NC}"
+  pause
+}
+start_all() {
+  docker ps -a --filter "label=$LABEL" --format '{{.Names}}' | xargs -r -I{} docker start {}
+  echo -e "${GREEN}Sab servers start ho gaye.${NC}"
+  pause
 }
 
-# ==========================================================
-# SELECT SERVER
-# ==========================================================
-
-select_server() {
-
-    local action="$1"
-
-    clear_screen
-
-    echo -e "${P}KINGCLOUD • SELECT SERVER${N}"
-    line
-    echo
-
-    local servers=()
-    local i=1
-
-    for file in "$INFO_DIR"/*.conf; do
-
-        [ -e "$file" ] || continue
-
-        unset SERVER_NAME CONTAINER_NAME
-
-        # shellcheck disable=SC1090
-        source "$file"
-
-        servers+=("$CONTAINER_NAME")
-
-        status="$(server_status "$CONTAINER_NAME")"
-
-        echo -e "${W}[$i]${N} $SERVER_NAME ${D}[$status]${N}"
-
-        i=$((i + 1))
-
-    done
-
-    if [ "${#servers[@]}" -eq 0 ]; then
-
-        echo -e "${D}No Cloud PCs found.${N}"
-        sleep 2
-        return
-
-    fi
-
-    echo
-
-    read -rp "Select server: " choice
-
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] ||
-       [ "$choice" -lt 1 ] ||
-       [ "$choice" -gt "${#servers[@]}" ]; then
-
-        echo -e "${R}Invalid selection.${N}"
-        sleep 2
-        return
-    fi
-
-    cname="${servers[$((choice - 1))]}"
-
-    case "$action" in
-
-        delete)
-            delete_server "$cname"
-            ;;
-
-        logs)
-            show_logs "$cname"
-            ;;
-
-        suspend)
-            suspend_server "$cname"
-            ;;
-
-        resume)
-            resume_server "$cname"
-            ;;
-
-    esac
-}
-
-# ==========================================================
-# DELETE
-# ==========================================================
-
+# ---------- [7] DELETE ----------
 delete_server() {
-
-    local cname="$1"
-
-    unset SERVER_NAME
-
-    if [ -f "$INFO_DIR/$cname.conf" ]; then
-        # shellcheck disable=SC1090
-        source "$INFO_DIR/$cname.conf"
-    fi
-
-    echo
-    echo -e "${R}WARNING: This deletes the Cloud PC container and volumes.${N}"
-    echo
-    echo -e "Server: ${W}${SERVER_NAME:-$cname}${N}"
-    echo
-
-    read -rp "Type DELETE to continue: " confirm
-
-    if [ "$confirm" != "DELETE" ]; then
-        echo -e "${Y}Cancelled.${N}"
-        sleep 1
-        return
-    fi
-
-    # Stop/Remove container
-    docker rm -f "$cname" >/dev/null 2>&1 || true
-
-    # Remove volumes
-    docker volume rm "${cname}_data" >/dev/null 2>&1 || true
-    docker volume rm "${cname}_iso" >/dev/null 2>&1 || true
-
-    # Remove config
-    rm -f "$INFO_DIR/$cname.conf"
-
-    # Remove lock
-    rm -f "$LOCK_DIR/$cname.installing"
-
-    echo
-    echo -e "${G}✓ Server deleted.${N}"
-
-    sleep 2
+  pick_container
+  [ -z "${CHOSEN:-}" ] && { pause; return; }
+  read -rp "Pakka delete karna hai '$CHOSEN'? (y/n) [n]: " c
+  if [[ "$c" == "y" || "$c" == "Y" ]]; then
+    docker rm -f "$CHOSEN" >/dev/null
+    echo -e "${RED}'$CHOSEN' delete ho gaya.${NC}"
+  fi
+  pause
 }
 
-# ==========================================================
-# SUSPEND
-# ==========================================================
-
+# ---------- [8] SUSPEND ----------
 suspend_server() {
-
-    local cname="$1"
-
-    unset SERVER_NAME
-
-    [ -f "$INFO_DIR/$cname.conf" ] &&
-        source "$INFO_DIR/$cname.conf"
-
-    if ! docker container inspect "$cname" >/dev/null 2>&1; then
-
-        echo -e "${R}✗ Container not found.${N}"
-        sleep 2
-        return
-    fi
-
-    status="$(server_status "$cname")"
-
-    if [ "$status" != "RUNNING" ]; then
-
-        echo -e "${Y}Server is not running.${N}"
-        sleep 2
-        return
-    fi
-
-    if docker pause "$cname" >/dev/null 2>&1; then
-        echo -e "${Y}⏸ $SERVER_NAME suspended.${N}"
-    else
-        echo -e "${R}✗ Suspend failed.${N}"
-    fi
-
-    sleep 2
+  pick_container
+  [ -z "${CHOSEN:-}" ] && { pause; return; }
+  docker pause "$CHOSEN" >/dev/null 2>&1 && echo -e "${YELLOW}'$CHOSEN' suspend ho gaya.${NC}"
+  pause
 }
 
-# ==========================================================
-# RESUME
-# ==========================================================
-
-resume_server() {
-
-    local cname="$1"
-
-    unset SERVER_NAME
-
-    [ -f "$INFO_DIR/$cname.conf" ] &&
-        source "$INFO_DIR/$cname.conf"
-
-    if ! docker container inspect "$cname" >/dev/null 2>&1; then
-
-        echo -e "${R}✗ Container not found.${N}"
-        sleep 2
-        return
-    fi
-
-    status="$(server_status "$cname")"
-
-    case "$status" in
-
-        SUSPENDED)
-
-            if docker unpause "$cname" >/dev/null 2>&1; then
-                echo -e "${G}✓ $SERVER_NAME resumed.${N}"
-            else
-                echo -e "${R}✗ Resume failed.${N}"
-            fi
-            ;;
-
-        STOPPED)
-
-            if docker start "$cname" >/dev/null 2>&1; then
-                echo -e "${G}✓ $SERVER_NAME started.${N}"
-            else
-                echo -e "${R}✗ Start failed.${N}"
-            fi
-            ;;
-
-        RUNNING)
-
-            echo -e "${G}✓ Already running.${N}"
-            ;;
-
-        *)
-
-            echo -e "${Y}Status: $status${N}"
-            ;;
-
-    esac
-
-    sleep 2
+# ---------- [9] UNSUSPEND ----------
+unsuspend_server() {
+  pick_container
+  [ -z "${CHOSEN:-}" ] && { pause; return; }
+  docker unpause "$CHOSEN" >/dev/null 2>&1 && echo -e "${GREEN}'$CHOSEN' unsuspend ho gaya.${NC}"
+  pause
 }
 
-# ==========================================================
-# LOGS
-# ==========================================================
-
-show_logs() {
-
-    local cname="$1"
-
-    unset SERVER_NAME
-
-    [ -f "$INFO_DIR/$cname.conf" ] &&
-        source "$INFO_DIR/$cname.conf"
-
-    clear_screen
-
-    echo -e "${P}KINGCLOUD • LOGS${N}"
-    line
-
-    echo -e "${W}Server:${N} ${SERVER_NAME:-$cname}"
-
-    echo
-    echo -e "${C}Installation Log${N}"
-    line
-
-    logfile="$LOG_DIR/$cname.log"
-
-    if [ -f "$logfile" ]; then
-        tail -n 60 "$logfile"
-    else
-        echo "No installation log."
-    fi
-
-    echo
-    echo -e "${C}Docker Log${N}"
-    line
-
-    if docker container inspect "$cname" >/dev/null 2>&1; then
-        docker logs --tail 40 "$cname" 2>&1 || true
-    else
-        echo "Container not created yet."
-    fi
-
-    echo
-    line
-
-    sleep 4
-}
-
-# ==========================================================
-# ABOUT
-# ==========================================================
-
+# ---------- [10] ABOUT ----------
 about() {
-
-    clear_screen
-
-    echo -e "${P}"
-    cat <<'EOF'
-╔══════════════════════════════════════════════════════════╗
-║                                                          ║
-║                 KINGCLOUD CLOUD PC                      ║
-║                                                          ║
-╠══════════════════════════════════════════════════════════╣
-║                                                          ║
-║  ✓ Windows Cloud PC                                     ║
-║  ✓ Multi Server                                          ║
-║  ✓ Background Installation                               ║
-║  ✓ Custom PC Name                                        ║
-║  ✓ Username / Password                                   ║
-║  ✓ RAM / CPU / Disk                                      ║
-║  ✓ Custom Web Port                                       ║
-║  ✓ Auto Free Port                                        ║
-║  ✓ VNC / RDP Ports                                       ║
-║  ✓ Persistent Volumes                                    ║
-║  ✓ Start All                                             ║
-║  ✓ Stop All                                              ║
-║  ✓ Restart All                                           ║
-║  ✓ Suspend / Resume                                      ║
-║  ✓ Delete Server                                         ║
-║  ✓ Installation Logs                                     ║
-║  ✓ Docker Logs                                           ║
-║  ✓ KVM Detection                                         ║
-║                                                          ║
-║                  K I N G C L O U D                       ║
-║                                                          ║
-╚══════════════════════════════════════════════════════════╝
+  echo -e "${CYAN}${BOLD}== KingCloud About & Features ==${NC}"
+  cat <<EOF
+- Ek click me Windows Cloud-PC install (background me chalega)
+- Har server ke liye alag naam, user, password
+- Web/VNC port khud select ya default 6080
+- RDP + VNC port auto assign (conflict-free)
+- RAM / CPU / Disk default ke saath, chahe to badlo
+- List / Restart / Stop / Start / Delete / Suspend / Unsuspend
+- Data & ISO alag volume me save (data loss nahi hoga restart pe)
 EOF
-    echo -e "${N}"
-
-    echo
-    echo -e "${D}Docker Image:${N}"
-    echo -e "${C}$IMAGE${N}"
-
-    echo
-    line
-
-    sleep 4
+  pause
 }
 
-# ==========================================================
-# CLEAN LOCKS
-# ==========================================================
-
-cleanup_locks() {
-
-    for lock in "$LOCK_DIR"/*.installing; do
-
-        [ -e "$lock" ] || continue
-
-        pid="$(cat "$lock" 2>/dev/null || true)"
-
-        if [ -z "$pid" ] ||
-           ! kill -0 "$pid" 2>/dev/null; then
-
-            rm -f "$lock"
-
-        fi
-
-    done
-}
-
-# ==========================================================
-# MAIN MENU
-# ==========================================================
-
+# ---------- MAIN ----------
+need_docker
 while true; do
-
-    cleanup_locks
-
-    show_banner
-
-    echo
-    echo -e "${G}[1]${N} 🚀 Install Windows Cloud PC"
-    echo -e "${C}[2]${N} 📋 List Cloud PCs"
-    echo -e "${B}[3]${N} 🔄 Restart All"
-    echo -e "${R}[4]${N} ⏹  Stop All"
-    echo -e "${G}[5]${N} ▶  Start All"
-    echo -e "${R}[6]${N} 🗑  Delete Server"
-    echo -e "${C}[7]${N} 📜 Server Logs"
-    echo -e "${Y}[8]${N} ⏸  Suspend Server"
-    echo -e "${G}[9]${N} ▶  Resume Server"
-    echo -e "${P}[10]${N} ℹ  About & Features"
-
-    echo
-    line
-
-    echo -e "${D}[0]${N} 🚪 Exit"
-    echo
-
-    read -rp $'\033[1;38;5;51mSelect option:\033[0m ' option
-
-    case "$option" in
-
-        1)
-            install_cloud_pc
-            ;;
-
-        2)
-            list_servers
-            ;;
-
-        3)
-            restart_all
-            ;;
-
-        4)
-            stop_all
-            ;;
-
-        5)
-            start_all
-            ;;
-
-        6)
-            select_server "delete"
-            ;;
-
-        7)
-            select_server "logs"
-            ;;
-
-        8)
-            select_server "suspend"
-            ;;
-
-        9)
-            select_server "resume"
-            ;;
-
-        10)
-            about
-            ;;
-
-        0)
-            clear_screen
-            echo -e "${G}KINGCLOUD Cloud PC Manager stopped.${N}"
-            exit 0
-            ;;
-
-        *)
-            echo -e "${R}Invalid option.${N}"
-            sleep 1
-            ;;
-
-    esac
-
+  banner
+  read -rp "Select option: " choice
+  case "$choice" in
+    1) install_server ;;
+    2) list_servers ;;
+    3) restart_all ;;
+    4) stop_all ;;
+    5) start_all ;;
+    6) echo -e "${YELLOW}Ye feature jald aa raha hai!${NC}"; pause ;;
+    7) delete_server ;;
+    8) suspend_server ;;
+    9) unsuspend_server ;;
+    10) about ;;
+    0) echo -e "${PURPLE}Bye! KingCloud band ho raha hai...${NC}"; exit 0 ;;
+    *) echo -e "${RED}Galat option, phir se try karo.${NC}"; sleep 1 ;;
+  esac
 done
