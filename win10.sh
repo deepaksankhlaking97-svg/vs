@@ -19,22 +19,24 @@ NC='\033[0m'
 # ---------- paths / config ----------
 KC_HOME="$HOME/.kingcloud"
 KC_LOGS="$KC_HOME/logs"
-KC_PORTS="$KC_HOME/ports.txt"
 LABEL="kingcloud=true"
 DEFAULT_IMAGE="sankhlaking97/win10-ultra-lite"
 
 mkdir -p "$KC_LOGS"
-touch "$KC_PORTS"
 
 # ---------- helpers ----------
 need_docker() {
   if ! command -v docker >/dev/null 2>&1; then
-    echo -e "${RED}Docker nahi mila! Pehle Docker install karo.${NC}"
+    echo -e "${RED}Docker not found! Please install Docker first.${NC}"
+    exit 1
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    echo -e "${RED}Cannot talk to the Docker daemon. Is it running, and do you have permission (try sudo or add your user to the docker group)?${NC}"
     exit 1
   fi
 }
 
-pause() { read -rp "$(echo -e "${GRAY}Enter dabao jari rakhne ke liye...${NC}")"; }
+pause() { read -rp "$(echo -e "${GRAY}Press Enter to continue...${NC}")"; }
 
 sanitize_name() {
   echo "$1" | tr -cd 'a-zA-Z0-9_.-' | tr 'A-Z' 'a-z'
@@ -104,7 +106,7 @@ pick_container() {
   # prints a numbered list, returns chosen container name in $CHOSEN
   mapfile -t NAMES < <(docker ps -a --filter "label=$LABEL" --format '{{.Names}}')
   if [ "${#NAMES[@]}" -eq 0 ]; then
-    echo -e "${RED}Koi server nahi mila.${NC}"
+    echo -e "${RED}No servers found.${NC}"
     CHOSEN=""
     return
   fi
@@ -113,24 +115,35 @@ pick_container() {
     echo -e "  ${CYAN}[$i]${NC} $n"
     i=$((i + 1))
   done
-  read -rp "Number chuno: " idx
+  read -rp "Pick a number: " idx
   if [[ "$idx" =~ ^[0-9]+$ ]] && [ "$idx" -ge 1 ] && [ "$idx" -le "${#NAMES[@]}" ]; then
     CHOSEN="${NAMES[$((idx - 1))]}"
   else
-    echo -e "${RED}Galat option.${NC}"
+    echo -e "${RED}Invalid option.${NC}"
     CHOSEN=""
   fi
 }
 
 # ---------- [1] INSTALL ----------
 install_server() {
-  echo -e "${PURPLE}${BOLD}== Naya Cloud-PC Install ==${NC}"
+  echo -e "${PURPLE}${BOLD}== New Cloud-PC Install ==${NC}"
   echo
 
-  read -rp "Windows / PC ka naam [WinPC]: " win_name
+  # Check KVM availability up front — this is the #1 cause of failed installs
+  KVM_AVAILABLE=0
+  if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+    KVM_AVAILABLE=1
+  else
+    echo -e "${YELLOW}Warning: /dev/kvm is not available on this host (no hardware virtualization,${NC}"
+    echo -e "${YELLOW}or nested virtualization is disabled on your VPS). Continuing WITHOUT KVM —${NC}"
+    echo -e "${YELLOW}the VM will run in slower software emulation mode, but install won't fail.${NC}"
+    echo
+  fi
+
+  read -rp "Windows / PC name [WinPC]: " win_name
   win_name=${win_name:-WinPC}
 
-  read -rp "Container ka naam [auto]: " cname
+  read -rp "Container name [auto]: " cname
   if [ -z "$cname" ]; then
     cname="kc-$(sanitize_name "$win_name")-$RANDOM"
   else
@@ -138,40 +151,40 @@ install_server() {
   fi
 
   if docker ps -a --format '{{.Names}}' | grep -qx "$cname"; then
-    echo -e "${RED}Ye naam pehle se hai. Doosra naam try karo.${NC}"
+    echo -e "${RED}That name already exists. Try a different one.${NC}"
     pause
     return
   fi
 
-  read -rp "Windows/User ka username [admin]: " win_user
+  read -rp "Username [admin]: " win_user
   win_user=${win_user:-admin}
 
   while true; do
-    read -rsp "Password set karo: " win_pass
+    read -rsp "Set a password: " win_pass
     echo
-    read -rsp "Password dobara likho: " win_pass2
+    read -rsp "Confirm password: " win_pass2
     echo
     if [ "$win_pass" == "$win_pass2" ] && [ -n "$win_pass" ]; then
       break
     fi
-    echo -e "${RED}Password match nahi hua ya khaali hai, phir se try karo.${NC}"
+    echo -e "${RED}Passwords didn't match or were empty, try again.${NC}"
   done
 
-  read -rp "Web/VNC port (default 6080, forward karna hai) [6080]: " web_port
+  read -rp "Web/VNC port to forward (default 6080) [6080]: " web_port
   web_port=${web_port:-6080}
   if ! port_free "$web_port"; then
     new_port=$(next_free_port "$web_port")
-    echo -e "${YELLOW}Port $web_port busy hai, iske jagah $new_port use ho raha hai.${NC}"
+    echo -e "${YELLOW}Port $web_port is busy, using $new_port instead.${NC}"
     web_port="$new_port"
   fi
 
   rdp_port=$(next_free_port 3389)
   vnc_port=$(next_free_port 5900)
 
-  read -rp "RAM kitna dena hai MB me [4096]: " ram
+  read -rp "RAM in MB [4096]: " ram
   ram=${ram:-4096}
 
-  read -rp "CPU kitne core dene hain [2]: " cpu
+  read -rp "CPU cores [2]: " cpu
   cpu=${cpu:-2}
 
   read -rp "Disk size [64G]: " disk
@@ -182,34 +195,49 @@ install_server() {
 
   echo
   echo -e "${CYAN}---- Summary ----${NC}"
-  echo -e "Naam        : $win_name  (container: $cname)"
+  echo -e "Name        : $win_name  (container: $cname)"
   echo -e "User        : $win_user"
   echo -e "Web/VNC Port: $web_port"
   echo -e "RDP Port    : $rdp_port"
   echo -e "VNC Port    : $vnc_port"
   echo -e "RAM         : ${ram}MB"
-  echo -e "CPU         : ${cpu} core"
+  echo -e "CPU         : ${cpu} core(s)"
   echo -e "Disk        : $disk"
   echo -e "Image       : $image"
+  echo -e "KVM         : $([ "$KVM_AVAILABLE" -eq 1 ] && echo "available" || echo "NOT available (software mode)")"
   echo
   read -rp "Confirm install? (y/n) [y]: " ok
   ok=${ok:-y}
   if [[ "$ok" != "y" && "$ok" != "Y" ]]; then
-    echo -e "${YELLOW}Cancel kar diya.${NC}"
+    echo -e "${YELLOW}Cancelled.${NC}"
     pause
     return
   fi
 
   logfile="$KC_LOGS/${cname}.log"
+  : >"$logfile"
 
-  echo -e "${GREEN}Background me install shuru ho raha hai...${NC}"
+  # Pull the image first, with visible progress, so pull errors surface immediately
+  echo -e "${CYAN}Pulling image '$image'...${NC}"
+  if ! docker pull "$image" >>"$logfile" 2>&1; then
+    echo -e "${RED}Failed to pull the image. Last log lines:${NC}"
+    tail -n 15 "$logfile"
+    pause
+    return
+  fi
+
+  echo -e "${GREEN}Starting install in the background...${NC}"
+
+  DEVICE_ARGS=()
+  if [ "$KVM_AVAILABLE" -eq 1 ]; then
+    DEVICE_ARGS=(--device /dev/kvm:/dev/kvm --cap-add NET_ADMIN)
+  fi
 
   (
     docker run -d \
       --name "$cname" \
       --restart unless-stopped \
-      --device /dev/kvm:/dev/kvm \
-      --cap-add NET_ADMIN \
+      "${DEVICE_ARGS[@]}" \
       --label "$LABEL" \
       --label "kingcloud.display_name=$win_name" \
       --label "kingcloud.user=$win_user" \
@@ -224,7 +252,7 @@ install_server() {
       -e DISK="${disk}" \
       -v "${cname}_data:/data" \
       -v "${cname}_iso:/iso" \
-      "$image" >"$logfile" 2>&1
+      "$image" >>"$logfile" 2>&1
   ) &
   bgpid=$!
 
@@ -240,14 +268,16 @@ install_server() {
   echo
 
   if [ "$status" -eq 0 ] && docker ps -a --format '{{.Names}}' | grep -qx "$cname"; then
-    echo -e "${GREEN}'$win_name' ($cname) install ho gaya aur background me chal raha hai!${NC}"
+    echo -e "${GREEN}'$win_name' ($cname) installed and running in the background!${NC}"
     echo -e "Access URL   : http://<server-ip>:${web_port}"
     echo -e "RDP Port     : ${rdp_port}"
     echo -e "VNC Port     : ${vnc_port}"
     echo -e "Live logs    : docker logs -f $cname"
-    echo -e "${GRAY}(Windows khud install hote rehna, iske andar time lagega — logs se progress dekho)${NC}"
+    echo -e "${GRAY}(Windows itself keeps installing inside the VM — check logs for progress)${NC}"
   else
-    echo -e "${RED}Install fail ho gaya. Log dekho: $logfile${NC}"
+    echo -e "${RED}Install failed. Last log lines:${NC}"
+    tail -n 20 "$logfile"
+    echo -e "${GRAY}Full log: $logfile${NC}"
   fi
   pause
 }
@@ -269,17 +299,17 @@ list_servers() {
 # ---------- [3][4][5] BULK ----------
 restart_all() {
   docker ps -a --filter "label=$LABEL" --format '{{.Names}}' | xargs -r -I{} docker restart {}
-  echo -e "${GREEN}Sab servers restart ho gaye.${NC}"
+  echo -e "${GREEN}All servers restarted.${NC}"
   pause
 }
 stop_all() {
   docker ps --filter "label=$LABEL" --format '{{.Names}}' | xargs -r -I{} docker stop {}
-  echo -e "${RED}Sab servers stop ho gaye.${NC}"
+  echo -e "${RED}All servers stopped.${NC}"
   pause
 }
 start_all() {
   docker ps -a --filter "label=$LABEL" --format '{{.Names}}' | xargs -r -I{} docker start {}
-  echo -e "${GREEN}Sab servers start ho gaye.${NC}"
+  echo -e "${GREEN}All servers started.${NC}"
   pause
 }
 
@@ -287,10 +317,10 @@ start_all() {
 delete_server() {
   pick_container
   [ -z "${CHOSEN:-}" ] && { pause; return; }
-  read -rp "Pakka delete karna hai '$CHOSEN'? (y/n) [n]: " c
+  read -rp "Really delete '$CHOSEN'? (y/n) [n]: " c
   if [[ "$c" == "y" || "$c" == "Y" ]]; then
     docker rm -f "$CHOSEN" >/dev/null
-    echo -e "${RED}'$CHOSEN' delete ho gaya.${NC}"
+    echo -e "${RED}'$CHOSEN' deleted.${NC}"
   fi
   pause
 }
@@ -299,7 +329,7 @@ delete_server() {
 suspend_server() {
   pick_container
   [ -z "${CHOSEN:-}" ] && { pause; return; }
-  docker pause "$CHOSEN" >/dev/null 2>&1 && echo -e "${YELLOW}'$CHOSEN' suspend ho gaya.${NC}"
+  docker pause "$CHOSEN" >/dev/null 2>&1 && echo -e "${YELLOW}'$CHOSEN' suspended.${NC}"
   pause
 }
 
@@ -307,7 +337,7 @@ suspend_server() {
 unsuspend_server() {
   pick_container
   [ -z "${CHOSEN:-}" ] && { pause; return; }
-  docker unpause "$CHOSEN" >/dev/null 2>&1 && echo -e "${GREEN}'$CHOSEN' unsuspend ho gaya.${NC}"
+  docker unpause "$CHOSEN" >/dev/null 2>&1 && echo -e "${GREEN}'$CHOSEN' unsuspended.${NC}"
   pause
 }
 
@@ -315,13 +345,14 @@ unsuspend_server() {
 about() {
   echo -e "${CYAN}${BOLD}== KingCloud About & Features ==${NC}"
   cat <<EOF
-- Ek click me Windows Cloud-PC install (background me chalega)
-- Har server ke liye alag naam, user, password
-- Web/VNC port khud select ya default 6080
-- RDP + VNC port auto assign (conflict-free)
-- RAM / CPU / Disk default ke saath, chahe to badlo
+- One-click Windows Cloud-PC install (runs in the background)
+- Each server gets its own name, username, and password
+- Web/VNC port is selectable, defaults to 6080
+- RDP + VNC ports auto-assigned (no conflicts)
+- RAM / CPU / Disk have defaults, all changeable
+- Auto-detects missing /dev/kvm and falls back to software mode
 - List / Restart / Stop / Start / Delete / Suspend / Unsuspend
-- Data & ISO alag volume me save (data loss nahi hoga restart pe)
+- Data & ISO stored in separate volumes (survives restarts)
 EOF
   pause
 }
@@ -337,12 +368,12 @@ while true; do
     3) restart_all ;;
     4) stop_all ;;
     5) start_all ;;
-    6) echo -e "${YELLOW}Ye feature jald aa raha hai!${NC}"; pause ;;
+    6) echo -e "${YELLOW}This feature is coming soon!${NC}"; pause ;;
     7) delete_server ;;
     8) suspend_server ;;
     9) unsuspend_server ;;
     10) about ;;
-    0) echo -e "${PURPLE}Bye! KingCloud band ho raha hai...${NC}"; exit 0 ;;
-    *) echo -e "${RED}Galat option, phir se try karo.${NC}"; sleep 1 ;;
+    0) echo -e "${PURPLE}Bye! Shutting down KingCloud...${NC}"; exit 0 ;;
+    *) echo -e "${RED}Invalid option, try again.${NC}"; sleep 1 ;;
   esac
 done
