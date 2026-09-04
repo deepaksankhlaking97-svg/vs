@@ -1,379 +1,553 @@
 #!/usr/bin/env bash
-# =====================================================================
-#  KINGCLOUD — Cloud-PC / Code-Server Control Center
-#  Docker • Multi Server • Windows Cloud-PC Management
-# =====================================================================
 
-set -uo pipefail
+set -Eeuo pipefail
 
-# ---------- colors ----------
-PURPLE='\033[38;5;141m'
-CYAN='\033[38;5;51m'
-GREEN='\033[38;5;46m'
-YELLOW='\033[38;5;220m'
-RED='\033[38;5;203m'
-GRAY='\033[38;5;245m'
-BOLD='\033[1m'
+PROJECT="/var/www/pterodactyl"
+LOG="/var/log/pterodactyl-manager.log"
+
+# ============================================================
+# COLORS
+# ============================================================
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+WHITE='\033[1;37m'
+GRAY='\033[0;90m'
 NC='\033[0m'
 
-# ---------- paths / config ----------
-KC_HOME="$HOME/.kingcloud"
-KC_LOGS="$KC_HOME/logs"
-LABEL="kingcloud=true"
-DEFAULT_IMAGE="sankhlaking97/win10-ultra-lite"
+BOLD='\033[1m'
 
-mkdir -p "$KC_LOGS"
+# ============================================================
+# LOGGING
+# ============================================================
 
-# ---------- helpers ----------
-need_docker() {
-  if ! command -v docker >/dev/null 2>&1; then
-    echo -e "${RED}Docker not found! Please install Docker first.${NC}"
+mkdir -p "$(dirname "$LOG")"
+touch "$LOG"
+
+# ============================================================
+# ROOT CHECK
+# ============================================================
+
+if [ "$(id -u)" -ne 0 ]; then
+    clear
+    echo
+    echo -e "${RED}${BOLD}✖ ROOT ACCESS REQUIRED${NC}"
+    echo
+    echo "Run:"
+    echo -e "${CYAN}sudo bash $0${NC}"
+    echo
     exit 1
-  fi
-  if ! docker info >/dev/null 2>&1; then
-    echo -e "${RED}Cannot talk to the Docker daemon. Is it running, and do you have permission (try sudo or add your user to the docker group)?${NC}"
-    exit 1
-  fi
+fi
+
+# ============================================================
+# ANIMATION
+# ============================================================
+
+SPINNER_PID=""
+
+spinner_start() {
+    local text="$1"
+
+    (
+        local chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+        local i=0
+
+        while true; do
+            printf "\r${CYAN}${chars:i++%${#chars}:1}${NC} ${WHITE}%s${NC}" "$text"
+            sleep 0.08
+        done
+    ) &
+
+    SPINNER_PID=$!
 }
 
-pause() { read -rp "$(echo -e "${GRAY}Press Enter to continue...${NC}")"; }
-
-sanitize_name() {
-  echo "$1" | tr -cd 'a-zA-Z0-9_.-' | tr 'A-Z' 'a-z'
-}
-
-port_free() {
-  local p="$1"
-  ! ss -tuln 2>/dev/null | grep -q ":$p " && ! docker ps -a --format '{{.Ports}}' | grep -q ":$p->"
-}
-
-next_free_port() {
-  local start="$1"
-  local p="$start"
-  while ! port_free "$p"; do
-    p=$((p + 1))
-  done
-  echo "$p"
-}
-
-count_status() {
-  RUNNING=$(docker ps --filter "label=$LABEL" --format '{{.ID}}' | wc -l | tr -d ' ')
-  TOTAL=$(docker ps -a --filter "label=$LABEL" --format '{{.ID}}' | wc -l | tr -d ' ')
-  SUSPENDED=$(docker ps -a --filter "label=$LABEL" --filter "status=paused" --format '{{.ID}}' | wc -l | tr -d ' ')
-}
-
-banner() {
-  clear
-  echo -e "${PURPLE}${BOLD}"
-  cat <<'EOF'
-  ┌──────────────────────────────────────────────┐
-  │   _  __ ___ _   _  ____                       │
-  │  | |/ /|_ _| \ | |/ ___|                      │
-  │  | ' /  | ||  \| | |  _                       │
-  │  | . \  | || |\  | |_| |                      │
-  │  |_|\_\|___|_| \_|\____|                      │
-  └──────────────────────────────────────────────┘
-EOF
-  echo -e "${NC}"
-  echo -e "        ${CYAN}CODE-SERVER / CLOUD-PC CONTROL CENTER${NC}"
-  echo -e "              ${BOLD}${PURPLE}K I N G C L O U D${NC}"
-  echo
-  echo -e "${GRAY}Docker • Multi Server • Windows Cloud-PC Management${NC}"
-  echo
-  count_status
-  echo -e "${GREEN}●${NC} Running    : ${RUNNING}"
-  echo -e "${PURPLE}●${NC} Total      : ${TOTAL}"
-  echo -e "${YELLOW}●${NC} Suspended  : ${SUSPENDED}"
-  echo
-  echo -e "${GRAY}------------------------------------------------${NC}"
-  echo -e " ${GREEN}[1]${NC} 🚀 Install Cloud-PC / Code-Server"
-  echo -e " ${CYAN}[2]${NC} 📋 List Servers"
-  echo -e " ${CYAN}[3]${NC} 🔄 Restart All"
-  echo -e " ${RED}[4]${NC} ⏹  Stop All"
-  echo -e " ${GREEN}[5]${NC} ▶  Start All"
-  echo -e " ${YELLOW}[6]${NC} ✨ Coming Soon"
-  echo -e " ${RED}[7]${NC} 🗑  Delete Server"
-  echo -e " ${YELLOW}[8]${NC} 🔒 Suspend Server"
-  echo -e " ${YELLOW}[9]${NC} 🔓 Unsuspend Server"
-  echo -e " ${CYAN}[10]${NC} ℹ  About & Features"
-  echo
-  echo -e "${GRAY}------------------------------------------------${NC}"
-  echo -e " ${RED}[0]${NC} 🚪 Exit"
-  echo
-}
-
-pick_container() {
-  # prints a numbered list, returns chosen container name in $CHOSEN
-  mapfile -t NAMES < <(docker ps -a --filter "label=$LABEL" --format '{{.Names}}')
-  if [ "${#NAMES[@]}" -eq 0 ]; then
-    echo -e "${RED}No servers found.${NC}"
-    CHOSEN=""
-    return
-  fi
-  local i=1
-  for n in "${NAMES[@]}"; do
-    echo -e "  ${CYAN}[$i]${NC} $n"
-    i=$((i + 1))
-  done
-  read -rp "Pick a number: " idx
-  if [[ "$idx" =~ ^[0-9]+$ ]] && [ "$idx" -ge 1 ] && [ "$idx" -le "${#NAMES[@]}" ]; then
-    CHOSEN="${NAMES[$((idx - 1))]}"
-  else
-    echo -e "${RED}Invalid option.${NC}"
-    CHOSEN=""
-  fi
-}
-
-# ---------- [1] INSTALL ----------
-install_server() {
-  echo -e "${PURPLE}${BOLD}== New Cloud-PC Install ==${NC}"
-  echo
-
-  # Check KVM availability up front — this is the #1 cause of failed installs
-  KVM_AVAILABLE=0
-  if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-    KVM_AVAILABLE=1
-  else
-    echo -e "${YELLOW}Warning: /dev/kvm is not available on this host (no hardware virtualization,${NC}"
-    echo -e "${YELLOW}or nested virtualization is disabled on your VPS). Continuing WITHOUT KVM —${NC}"
-    echo -e "${YELLOW}the VM will run in slower software emulation mode, but install won't fail.${NC}"
-    echo
-  fi
-
-  read -rp "Windows / PC name [WinPC]: " win_name
-  win_name=${win_name:-WinPC}
-
-  read -rp "Container name [auto]: " cname
-  if [ -z "$cname" ]; then
-    cname="kc-$(sanitize_name "$win_name")-$RANDOM"
-  else
-    cname=$(sanitize_name "$cname")
-  fi
-
-  if docker ps -a --format '{{.Names}}' | grep -qx "$cname"; then
-    echo -e "${RED}That name already exists. Try a different one.${NC}"
-    pause
-    return
-  fi
-
-  read -rp "Username [admin]: " win_user
-  win_user=${win_user:-admin}
-
-  while true; do
-    read -rsp "Set a password: " win_pass
-    echo
-    read -rsp "Confirm password: " win_pass2
-    echo
-    if [ "$win_pass" == "$win_pass2" ] && [ -n "$win_pass" ]; then
-      break
+spinner_stop() {
+    if [ -n "${SPINNER_PID:-}" ]; then
+        kill "$SPINNER_PID" 2>/dev/null || true
+        wait "$SPINNER_PID" 2>/dev/null || true
+        SPINNER_PID=""
     fi
-    echo -e "${RED}Passwords didn't match or were empty, try again.${NC}"
-  done
 
-  read -rp "Web/VNC port to forward (default 6080) [6080]: " web_port
-  web_port=${web_port:-6080}
-  if ! port_free "$web_port"; then
-    new_port=$(next_free_port "$web_port")
-    echo -e "${YELLOW}Port $web_port is busy, using $new_port instead.${NC}"
-    web_port="$new_port"
-  fi
-
-  rdp_port=$(next_free_port 3389)
-  vnc_port=$(next_free_port 5900)
-
-  read -rp "RAM in MB [4096]: " ram
-  ram=${ram:-4096}
-
-  read -rp "CPU cores [2]: " cpu
-  cpu=${cpu:-2}
-
-  read -rp "Disk size [64G]: " disk
-  disk=${disk:-64G}
-
-  read -rp "Docker image [${DEFAULT_IMAGE}]: " image
-  image=${image:-$DEFAULT_IMAGE}
-
-  echo
-  echo -e "${CYAN}---- Summary ----${NC}"
-  echo -e "Name        : $win_name  (container: $cname)"
-  echo -e "User        : $win_user"
-  echo -e "Web/VNC Port: $web_port"
-  echo -e "RDP Port    : $rdp_port"
-  echo -e "VNC Port    : $vnc_port"
-  echo -e "RAM         : ${ram}MB"
-  echo -e "CPU         : ${cpu} core(s)"
-  echo -e "Disk        : $disk"
-  echo -e "Image       : $image"
-  echo -e "KVM         : $([ "$KVM_AVAILABLE" -eq 1 ] && echo "available" || echo "NOT available (software mode)")"
-  echo
-  read -rp "Confirm install? (y/n) [y]: " ok
-  ok=${ok:-y}
-  if [[ "$ok" != "y" && "$ok" != "Y" ]]; then
-    echo -e "${YELLOW}Cancelled.${NC}"
-    pause
-    return
-  fi
-
-  logfile="$KC_LOGS/${cname}.log"
-  : >"$logfile"
-
-  # Pull the image first, with visible progress, so pull errors surface immediately
-  echo -e "${CYAN}Pulling image '$image'...${NC}"
-  if ! docker pull "$image" >>"$logfile" 2>&1; then
-    echo -e "${RED}Failed to pull the image. Last log lines:${NC}"
-    tail -n 15 "$logfile"
-    pause
-    return
-  fi
-
-  echo -e "${GREEN}Starting install in the background...${NC}"
-
-  DEVICE_ARGS=()
-  if [ "$KVM_AVAILABLE" -eq 1 ]; then
-    DEVICE_ARGS=(--device /dev/kvm:/dev/kvm --cap-add NET_ADMIN)
-  fi
-
-  (
-    docker run -d \
-      --name "$cname" \
-      --restart unless-stopped \
-      "${DEVICE_ARGS[@]}" \
-      --label "$LABEL" \
-      --label "kingcloud.display_name=$win_name" \
-      --label "kingcloud.user=$win_user" \
-      -p "${web_port}:6080" \
-      -p "${vnc_port}:5900" \
-      -p "${rdp_port}:3389" \
-      -e VNC_PASSWORD="$win_pass" \
-      -e USERNAME="$win_user" \
-      -e PASSWORD="$win_pass" \
-      -e RAM="${ram}" \
-      -e CPU="${cpu}" \
-      -e DISK="${disk}" \
-      -v "${cname}_data:/data" \
-      -v "${cname}_iso:/iso" \
-      "$image" >>"$logfile" 2>&1
-  ) &
-  bgpid=$!
-
-  spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-  i=0
-  while kill -0 "$bgpid" 2>/dev/null; do
-    i=$(((i + 1) % ${#spin}))
-    printf "\r${CYAN}%s Installing '%s' ...${NC}" "${spin:$i:1}" "$win_name"
-    sleep 0.15
-  done
-  wait "$bgpid"
-  status=$?
-  echo
-
-  if [ "$status" -eq 0 ] && docker ps -a --format '{{.Names}}' | grep -qx "$cname"; then
-    echo -e "${GREEN}'$win_name' ($cname) installed and running in the background!${NC}"
-    echo -e "Access URL   : http://<server-ip>:${web_port}"
-    echo -e "RDP Port     : ${rdp_port}"
-    echo -e "VNC Port     : ${vnc_port}"
-    echo -e "Live logs    : docker logs -f $cname"
-    echo -e "${GRAY}(Windows itself keeps installing inside the VM — check logs for progress)${NC}"
-  else
-    echo -e "${RED}Install failed. Last log lines:${NC}"
-    tail -n 20 "$logfile"
-    echo -e "${GRAY}Full log: $logfile${NC}"
-  fi
-  pause
+    printf "\r\033[K"
 }
 
-# ---------- [2] LIST ----------
-list_servers() {
-  echo -e "${CYAN}${BOLD}== Servers ==${NC}"
-  printf "%-20s %-10s %-22s %-8s\n" "NAME" "STATUS" "DISPLAY-NAME" "USER"
-  docker ps -a --filter "label=$LABEL" --format '{{.Names}}' | while read -r n; do
-    st=$(docker inspect -f '{{.State.Status}}' "$n")
-    dn=$(docker inspect -f '{{ index .Config.Labels "kingcloud.display_name" }}' "$n")
-    us=$(docker inspect -f '{{ index .Config.Labels "kingcloud.user" }}' "$n")
-    printf "%-20s %-10s %-22s %-8s\n" "$n" "$st" "$dn" "$us"
-  done
-  echo
-  pause
+run_cmd() {
+    local name="$1"
+    shift
+
+    echo
+    echo -e "${BLUE}┌─${NC} ${WHITE}${name}${NC}"
+
+    spinner_start "$name"
+
+    if "$@" >>"$LOG" 2>&1; then
+        spinner_stop
+        echo -e "${GREEN}└─ ✔ ${name}${NC}"
+        return 0
+    else
+        spinner_stop
+        echo -e "${RED}└─ ✖ ${name}${NC}"
+        echo
+        echo -e "${YELLOW}Last log:${NC}"
+        tail -20 "$LOG"
+        return 1
+    fi
 }
 
-# ---------- [3][4][5] BULK ----------
-restart_all() {
-  docker ps -a --filter "label=$LABEL" --format '{{.Names}}' | xargs -r -I{} docker restart {}
-  echo -e "${GREEN}All servers restarted.${NC}"
-  pause
-}
-stop_all() {
-  docker ps --filter "label=$LABEL" --format '{{.Names}}' | xargs -r -I{} docker stop {}
-  echo -e "${RED}All servers stopped.${NC}"
-  pause
-}
-start_all() {
-  docker ps -a --filter "label=$LABEL" --format '{{.Names}}' | xargs -r -I{} docker start {}
-  echo -e "${GREEN}All servers started.${NC}"
-  pause
+# ============================================================
+# HEADER
+# ============================================================
+
+header() {
+    clear
+
+    echo
+    echo -e "${MAGENTA}${BOLD}"
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║                                                          ║"
+    echo "║          PTERODACTYL PANEL MANAGER                      ║"
+    echo "║                                                          ║"
+    echo "║          Dependency • Install • Update • Remove          ║"
+    echo "║                                                          ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+
+    echo -e "${GRAY}Project: ${PROJECT}${NC}"
+    echo
 }
 
-# ---------- [7] DELETE ----------
-delete_server() {
-  pick_container
-  [ -z "${CHOSEN:-}" ] && { pause; return; }
-  read -rp "Really delete '$CHOSEN'? (y/n) [n]: " c
-  if [[ "$c" == "y" || "$c" == "Y" ]]; then
-    docker rm -f "$CHOSEN" >/dev/null
-    echo -e "${RED}'$CHOSEN' deleted.${NC}"
-  fi
-  pause
+# ============================================================
+# PROJECT CHECK
+# ============================================================
+
+check_project() {
+
+    if [ ! -d "$PROJECT" ]; then
+        echo -e "${RED}✖ Project directory not found:${NC}"
+        echo "$PROJECT"
+        exit 1
+    fi
+
+    if [ ! -f "$PROJECT/package.json" ]; then
+        echo -e "${RED}✖ package.json not found:${NC}"
+        echo "$PROJECT/package.json"
+        exit 1
+    fi
 }
 
-# ---------- [8] SUSPEND ----------
-suspend_server() {
-  pick_container
-  [ -z "${CHOSEN:-}" ] && { pause; return; }
-  docker pause "$CHOSEN" >/dev/null 2>&1 && echo -e "${YELLOW}'$CHOSEN' suspended.${NC}"
-  pause
+# ============================================================
+# NODE INSTALL
+# ============================================================
+
+install_node() {
+
+    if command -v node >/dev/null 2>&1; then
+        echo -e "${GREEN}✔ Node.js already installed: $(node --version)${NC}"
+        return
+    fi
+
+    echo
+    echo -e "${CYAN}Installing Node.js 22...${NC}"
+
+    run_cmd "Downloading NodeSource setup" \
+        bash -c 'curl -fsSL https://deb.nodesource.com/setup_22.x | bash -'
+
+    run_cmd "Installing Node.js" \
+        apt-get install -y nodejs
+
+    echo -e "${GREEN}✔ Node.js installed: $(node --version)${NC}"
 }
 
-# ---------- [9] UNSUSPEND ----------
-unsuspend_server() {
-  pick_container
-  [ -z "${CHOSEN:-}" ] && { pause; return; }
-  docker unpause "$CHOSEN" >/dev/null 2>&1 && echo -e "${GREEN}'$CHOSEN' unsuspended.${NC}"
-  pause
-}
+# ============================================================
+# YARN INSTALL
+# ============================================================
 
-# ---------- [10] ABOUT ----------
-about() {
-  echo -e "${CYAN}${BOLD}== KingCloud About & Features ==${NC}"
-  cat <<EOF
-- One-click Windows Cloud-PC install (runs in the background)
-- Each server gets its own name, username, and password
-- Web/VNC port is selectable, defaults to 6080
-- RDP + VNC ports auto-assigned (no conflicts)
-- RAM / CPU / Disk have defaults, all changeable
-- Auto-detects missing /dev/kvm and falls back to software mode
-- List / Restart / Stop / Start / Delete / Suspend / Unsuspend
-- Data & ISO stored in separate volumes (survives restarts)
+install_yarn() {
+
+    echo
+    echo -e "${CYAN}Checking Yarn...${NC}"
+
+    if command -v yarn >/dev/null 2>&1; then
+        echo -e "${GREEN}✔ Yarn already installed: $(yarn --version)${NC}"
+        return
+    fi
+
+    if ! command -v corepack >/dev/null 2>&1; then
+
+        run_cmd "Installing Corepack" \
+            npm install -g corepack
+
+    fi
+
+    run_cmd "Enabling Corepack" \
+        corepack enable
+
+    run_cmd "Preparing Yarn 1.22.22" \
+        corepack prepare yarn@1.22.22 --activate
+
+    hash -r
+
+    # Fallback wrapper
+    if ! command -v yarn >/dev/null 2>&1; then
+
+        echo -e "${YELLOW}Creating Yarn command wrapper...${NC}"
+
+        cat > /usr/local/bin/yarn <<'EOF'
+#!/usr/bin/env bash
+exec corepack yarn "$@"
 EOF
-  pause
+
+        cat > /usr/local/bin/yarnpkg <<'EOF'
+#!/usr/bin/env bash
+exec corepack yarn "$@"
+EOF
+
+        chmod +x /usr/local/bin/yarn
+        chmod +x /usr/local/bin/yarnpkg
+
+        hash -r
+    fi
+
+    if ! command -v yarn >/dev/null 2>&1; then
+        echo -e "${RED}✖ Yarn installation failed.${NC}"
+        exit 1
+    fi
+
+    echo -e "${GREEN}✔ Yarn: $(yarn --version)${NC}"
 }
 
-# ---------- MAIN ----------
-need_docker
+# ============================================================
+# SYSTEM DEPENDENCIES
+# ============================================================
+
+install_system_dependencies() {
+
+    echo
+    echo -e "${CYAN}Installing required system packages...${NC}"
+
+    run_cmd "Updating APT package list" \
+        apt-get update -y
+
+    run_cmd "Installing curl" \
+        apt-get install -y curl
+
+    run_cmd "Installing Git" \
+        apt-get install -y git
+
+    run_cmd "Installing build tools" \
+        apt-get install -y build-essential
+
+    run_cmd "Installing Python3" \
+        apt-get install -y python3
+}
+
+# ============================================================
+# INSTALL / FIX
+# ============================================================
+
+install_fix() {
+
+    header
+
+    echo -e "${CYAN}${BOLD}INSTALL / FIX MODE${NC}"
+    echo
+    echo "This will:"
+    echo " • Check Node.js"
+    echo " • Setup Yarn"
+    echo " • Remove broken node_modules"
+    echo " • Install dependencies"
+    echo " • Fix Webpack"
+    echo " • Fix React"
+    echo
+
+    read -rp "Press ENTER to continue or Ctrl+C to cancel..."
+
+    check_project
+
+    cd "$PROJECT"
+
+    echo
+    echo -e "${MAGENTA}━━━ SYSTEM ━━━${NC}"
+
+    install_system_dependencies
+
+    echo
+    echo -e "${MAGENTA}━━━ NODE.JS ━━━${NC}"
+
+    install_node
+
+    echo
+    echo -e "${MAGENTA}━━━ YARN ━━━${NC}"
+
+    install_yarn
+
+    echo
+    echo -e "${MAGENTA}━━━ CLEANING ━━━${NC}"
+
+    run_cmd "Removing node_modules" \
+        rm -rf node_modules
+
+    echo
+    echo -e "${MAGENTA}━━━ DEPENDENCIES ━━━${NC}"
+
+    if [ -f yarn.lock ]; then
+
+        if ! run_cmd "Installing packages from yarn.lock" \
+            yarn install --frozen-lockfile; then
+
+            run_cmd "Installing packages with Yarn" \
+                yarn install
+        fi
+
+    else
+
+        run_cmd "Installing packages from package.json" \
+            yarn install
+
+    fi
+
+    echo
+    echo -e "${MAGENTA}━━━ WEBPACK ━━━${NC}"
+
+    if node -e "require.resolve('webpack')" >/dev/null 2>&1; then
+
+        echo -e "${GREEN}✔ Webpack already installed${NC}"
+
+    else
+
+        run_cmd "Installing Webpack" \
+            yarn add --dev webpack
+
+    fi
+
+    echo
+    echo -e "${MAGENTA}━━━ REACT ━━━${NC}"
+
+    if node -e "require.resolve('react')" >/dev/null 2>&1; then
+
+        echo -e "${GREEN}✔ React already installed${NC}"
+
+    else
+
+        run_cmd "Installing React + React DOM" \
+            yarn add react react-dom
+
+    fi
+
+    echo
+    echo -e "${MAGENTA}━━━ FINAL CHECK ━━━${NC}"
+
+    echo
+
+    if node -e "require.resolve('webpack')" >/dev/null 2>&1; then
+        echo -e "${GREEN}✔ Webpack: $(node -e "console.log(require('webpack/package.json').version)")${NC}"
+    else
+        echo -e "${RED}✖ Webpack missing${NC}"
+    fi
+
+    if node -e "require.resolve('react')" >/dev/null 2>&1; then
+        echo -e "${GREEN}✔ React: $(node -e "console.log(require('react/package.json').version)")${NC}"
+    else
+        echo -e "${RED}✖ React missing${NC}"
+    fi
+
+    echo
+    echo -e "${GREEN}${BOLD}"
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║                  INSTALL COMPLETE ✔                      ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+
+    read -rp "Press ENTER to return to menu..."
+}
+
+# ============================================================
+# UPDATE
+# ============================================================
+
+update_panel() {
+
+    header
+
+    echo -e "${CYAN}${BOLD}UPDATE MODE${NC}"
+    echo
+    echo "This will update the Pterodactyl dependencies."
+    echo
+
+    read -rp "Press ENTER to continue or Ctrl+C to cancel..."
+
+    check_project
+
+    cd "$PROJECT"
+
+    echo
+    echo -e "${MAGENTA}━━━ CHECKING TOOLS ━━━${NC}"
+
+    install_node
+    install_yarn
+
+    echo
+    echo -e "${MAGENTA}━━━ UPDATING PACKAGES ━━━${NC}"
+
+    run_cmd "Checking outdated packages" \
+        yarn outdated || true
+
+    echo
+    echo -e "${YELLOW}Updating dependencies...${NC}"
+
+    run_cmd "Updating Yarn dependencies" \
+        yarn upgrade
+
+    echo
+    echo -e "${MAGENTA}━━━ VERIFY ━━━${NC}"
+
+    if node -e "require.resolve('webpack')" >/dev/null 2>&1; then
+        echo -e "${GREEN}✔ Webpack OK${NC}"
+    else
+        echo -e "${YELLOW}Webpack missing → installing...${NC}"
+        run_cmd "Installing Webpack" yarn add --dev webpack
+    fi
+
+    if node -e "require.resolve('react')" >/dev/null 2>&1; then
+        echo -e "${GREEN}✔ React OK${NC}"
+    else
+        echo -e "${YELLOW}React missing → installing...${NC}"
+        run_cmd "Installing React" yarn add react react-dom
+    fi
+
+    echo
+    echo -e "${GREEN}${BOLD}"
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║                    UPDATE COMPLETE ✔                     ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+
+    read -rp "Press ENTER to return to menu..."
+}
+
+# ============================================================
+# UNINSTALL
+# ============================================================
+
+uninstall_dependencies() {
+
+    header
+
+    echo -e "${RED}${BOLD}UNINSTALL MODE${NC}"
+    echo
+    echo "This will remove:"
+    echo " • node_modules"
+    echo " • Yarn cache"
+    echo " • Corepack Yarn setup"
+    echo
+    echo "package.json and yarn.lock WILL NOT be deleted."
+    echo
+
+    read -rp "Type REMOVE to continue: " CONFIRM
+
+    if [ "$CONFIRM" != "REMOVE" ]; then
+        echo
+        echo -e "${YELLOW}Cancelled.${NC}"
+        sleep 2
+        return
+    fi
+
+    check_project
+
+    cd "$PROJECT"
+
+    echo
+    echo -e "${MAGENTA}━━━ REMOVING PROJECT DEPENDENCIES ━━━${NC}"
+
+    if [ -d node_modules ]; then
+        run_cmd "Removing node_modules" \
+            rm -rf node_modules
+    else
+        echo -e "${GRAY}node_modules not found.${NC}"
+    fi
+
+    echo
+    echo -e "${MAGENTA}━━━ CLEANING YARN ━━━${NC}"
+
+    if command -v yarn >/dev/null 2>&1; then
+        run_cmd "Cleaning Yarn cache" \
+            yarn cache clean || true
+    fi
+
+    echo
+    echo -e "${MAGENTA}━━━ REMOVING YARN WRAPPERS ━━━${NC}"
+
+    rm -f /usr/local/bin/yarn
+    rm -f /usr/local/bin/yarnpkg
+
+    echo -e "${GREEN}✔ Yarn wrappers removed${NC}"
+
+    echo
+    echo -e "${YELLOW}Note:${NC} Node.js ko remove nahi kiya gaya."
+    echo "System ke other applications Node.js use kar sakte hain."
+
+    echo
+    echo -e "${GREEN}${BOLD}"
+    echo "╔══════════════════════════════════════════════════════════╗"
+    echo "║                  UNINSTALL COMPLETE ✔                    ║"
+    echo "╚══════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+
+    read -rp "Press ENTER to return to menu..."
+}
+
+# ============================================================
+# MAIN MENU
+# ============================================================
+
 while true; do
-  banner
-  read -rp "Select option: " choice
-  case "$choice" in
-    1) install_server ;;
-    2) list_servers ;;
-    3) restart_all ;;
-    4) stop_all ;;
-    5) start_all ;;
-    6) echo -e "${YELLOW}This feature is coming soon!${NC}"; pause ;;
-    7) delete_server ;;
-    8) suspend_server ;;
-    9) unsuspend_server ;;
-    10) about ;;
-    0) echo -e "${PURPLE}Bye! Shutting down KingCloud...${NC}"; exit 0 ;;
-    *) echo -e "${RED}Invalid option, try again.${NC}"; sleep 1 ;;
-  esac
+
+    header
+
+    echo -e "${WHITE}${BOLD}SELECT OPTION${NC}"
+    echo
+
+    echo -e " ${GREEN}[1]${NC} Install / Fix"
+    echo -e "     ${GRAY}Fresh dependencies + Webpack + React repair${NC}"
+    echo
+
+    echo -e " ${CYAN}[2]${NC} Update"
+    echo -e "     ${GRAY}Update installed project dependencies${NC}"
+    echo
+
+    echo -e " ${RED}[3]${NC} Uninstall"
+    echo -e "     ${GRAY}Remove node_modules + Yarn setup${NC}"
+    echo
+
+    echo -e "${GRAY}──────────────────────────────────────────────────────${NC}"
+    echo
+
+    read -rp "Enter option [1-3]: " OPTION
+
+    case "$OPTION" in
+
+        1)
+            install_fix
+            ;;
+
+        2)
+            update_panel
+            ;;
+
+        3)
+            uninstall_dependencies
+            ;;
+
+        *)
+            echo
+            echo -e "${RED}✖ Invalid option.${NC}"
+            sleep 1
+            ;;
+
+    esac
+
 done
