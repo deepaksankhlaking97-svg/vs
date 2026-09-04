@@ -7,6 +7,7 @@ set -Eeuo pipefail
 
 C_RESET="\e[0m"
 C_BOLD="\e[1m"
+C_WHITE="\e[37m"
 C_RED="\e[31m"
 C_GREEN="\e[32m"
 C_YELLOW="\e[33m"
@@ -80,7 +81,7 @@ PANEL_PORT=${PANEL_PORT:-399}
 echo
 print_step 1 5 "Installing System Dependencies"
 run_with_spinner "apt update -qq" "Updating package lists"
-run_with_spinner "apt install -y -qq python3 python3-flask sqlite3" "Installing Python & SQLite"
+run_with_spinner "apt install -y -qq python3 python3-flask sqlite3" "Installing Python, Flask & SQLite"
 
 print_step 2 5 "Setting up Directories"
 run_with_spinner "mkdir -p /opt/kingcloud-panel /opt/minecraft/servers" "Creating directories"
