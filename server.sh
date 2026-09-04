@@ -55,7 +55,6 @@ cat << "EOF"
  |_|\_\__,_|_|_| |_|\_\|_|_|\___|_.__/|_|(_)  \____|_| |_|\___|\__,_|_|\__,_|_|   
 EOF
 echo -e "${C_RESET}"
-echo -e "${C_BRIGHT_CYAN}  ═══════════════════════════════════════════════════════════════════${C_RESET}"
 echo -e "${C_BOLD}${C_WHITE}               KINGCLOUD PANEL - FULL INSTALLATION                ${C_RESET}"
 echo -e "${C_BRIGHT_CYAN}  ═══════════════════════════════════════════════════════════════════${C_RESET}"
 echo
